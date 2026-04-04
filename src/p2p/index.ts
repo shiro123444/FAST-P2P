@@ -1,0 +1,7 @@
+export { P2PSwarm } from "./swarm"
+export { sendFile, handleIncomingTransfer, computeFileHash } from "./transfer"
+export type { Message, PeerInfo, TransferInfo } from "./protocol"
+export { encodeMessage, createMessageParser, CHUNK_SIZE } from "./protocol"
+export { RelayClient } from "./relay-client"
+export { deriveKey, encryptChunk, decryptChunk } from "./crypto"
+export type { EncryptedChunk } from "./crypto"

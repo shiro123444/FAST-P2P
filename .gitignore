@@ -1,0 +1,7 @@
+node_modules/
+*.tsbuildinfo
+.codex
+task_plan.md
+findings.md
+progress.md
+p2p.ts
