@@ -1,0 +1,5 @@
+
+> @fast-p2p/relay@0.1.0 dev
+> tsx src/index.ts
+
+[relay] listening on http://127.0.0.1:3000

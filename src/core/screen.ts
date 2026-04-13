@@ -124,6 +124,16 @@ export interface Cell {
   attrs: TextAttributes
 }
 
+export function sanitizeCellChar(char: string): string {
+  const firstChar = Array.from(char)[0]
+  if (!firstChar) return " "
+  const code = firstChar.codePointAt(0)
+  if (code === undefined) return " "
+  if (code < 0x20) return " "
+  if (code >= 0x7f && code <= 0x9f) return " "
+  return firstChar
+}
+
 export class ScreenBuffer {
   width: number
   height: number
@@ -149,9 +159,10 @@ export class ScreenBuffer {
   setCell(x: number, y: number, char: string, fg: RGBA, bg: RGBA, attrs: TextAttributes = 0): void {
     if (x < 0 || x >= this.width || y < 0 || y >= this.height) return
     if (!this.cells[y]) return
+    const safeChar = sanitizeCellChar(char)
     const cell = this.cells[y][x]
-    if (cell.char !== char || !cell.fg.equals(fg) || !cell.bg.equals(bg) || cell.attrs !== attrs) {
-      cell.char = char
+    if (cell.char !== safeChar || !cell.fg.equals(fg) || !cell.bg.equals(bg) || cell.attrs !== attrs) {
+      cell.char = safeChar
       cell.fg = fg
       cell.bg = bg
       cell.attrs = attrs

@@ -1,0 +1,26 @@
+
+> @fast-p2p/relay@0.1.0 dev
+> tsx src/index.ts
+
+[relay] listening on http://127.0.0.1:8765
+node:events:496
+      throw er; // Unhandled 'error' event
+      ^
+
+Error: listen EACCES: permission denied 127.0.0.1:8765
+    at Server.setupListenHandle [as _listen2] (node:net:1915:21)
+    at listenInCluster (node:net:1994:12)
+    at node:net:2203:7
+    at process.processTicksAndRejections (node:internal/process/task_queues:90:21)
+Emitted 'error' event on WebSocketServer instance at:
+    at Server.emit (node:events:518:28)
+    at emitErrorNT (node:net:1973:8)
+    at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+  code: 'EACCES',
+  errno: -4092,
+  syscall: 'listen',
+  address: '127.0.0.1',
+  port: 8765
+}
+
+Node.js v22.14.0

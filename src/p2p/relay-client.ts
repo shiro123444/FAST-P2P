@@ -1,10 +1,17 @@
-import { deriveKey, decryptChunk, encryptChunk, type EncryptedChunk } from "./crypto"
-import type { TransferInfo } from "./protocol"
+import { deriveKey, decryptChunk, type EncryptedChunk } from "./crypto"
+
+export interface RelayFileMeta {
+  id: string
+  name: string
+  size: number
+  total: number
+  hash?: string
+}
 
 export interface RelayClientEvents {
   "peer-join": (peerId: string) => void
   "peer-leave": () => void
-  message: (data: EncryptedChunk, index: number, total: number) => void
+  message: (data: Buffer, index: number, total: number, meta?: RelayFileMeta | null) => void
   done: (hash: string) => void
   error: (err: Error) => void
 }
@@ -76,12 +83,16 @@ export class RelayClient {
       case "created":
         this.room = msg.room
         this.peerId = msg.peerId
+        this.peer = null
+        this.key = deriveKey(msg.room)
         break
 
       case "joined":
         this.room = msg.room
         this.peerId = msg.peerId
-        this.peer = null
+        this.peer = msg.peer ?? null
+        if (!this.key) this.key = deriveKey(msg.room)
+        if (this.peer) this.emit("peer-join", this.peer)
         break
 
       case "peer_joined":
@@ -103,7 +114,8 @@ export class RelayClient {
             tag: msg.data.tag,
           }
           const decrypted = decryptChunk(chunk, this.key)
-          this.emit("message", chunk, msg.data.index, msg.data.total)
+          const meta = (msg.data._meta ?? msg.data.meta ?? null) as RelayFileMeta | null
+          this.emit("message", decrypted, msg.data.index, msg.data.total, meta)
         } catch (err) {
           this.emit("error", new Error("Decryption failed"))
         }
@@ -129,11 +141,11 @@ export class RelayClient {
     this.ws?.send(JSON.stringify({ type: "join", room: roomCode }))
   }
 
-  sendChunk(chunk: EncryptedChunk, index: number, total: number): void {
+  sendChunk(chunk: EncryptedChunk, index: number, total: number, meta?: RelayFileMeta | null): void {
     this.ws?.send(
       JSON.stringify({
         type: "relay",
-        data: { iv: chunk.iv, data: chunk.data, tag: chunk.tag, index, total },
+        data: { iv: chunk.iv, data: chunk.data, tag: chunk.tag, index, total, _meta: meta ?? null },
       }),
     )
   }

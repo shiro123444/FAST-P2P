@@ -1,0 +1,9 @@
+
+> @tui-framework/core@0.1.0 relay:dev
+> npm --prefix apps/relay run dev
+
+
+> @fast-p2p/relay@0.1.0 dev
+> tsx src/index.ts
+
+[relay] listening on http://0.0.0.0:8765

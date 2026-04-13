@@ -28,6 +28,13 @@ interface Element {
   id?: number
 }
 
+interface ClipRect {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
 let _idCounter = 0
 
 export class TUI {
@@ -184,7 +191,7 @@ export class TUI {
     const container = { x: 0, y: 0, width: this.width, height: this.height }
     LayoutEngine.calculate(root, container)
 
-    this.drawNode(root, this.backgroundColor)
+    this.drawNode(root, this.backgroundColor, { x: 0, y: 0, width: this.width, height: this.height })
 
     const output = this.screen.render()
     if (output) {
@@ -262,7 +269,16 @@ export class TUI {
     return text.length
   }
 
-  private drawNode(node: LayoutNode, parentBg: RGBA): void {
+  private intersectRect(a: ClipRect, b: ClipRect): ClipRect | null {
+    const x1 = Math.max(a.x, b.x)
+    const y1 = Math.max(a.y, b.y)
+    const x2 = Math.min(a.x + a.width, b.x + b.width)
+    const y2 = Math.min(a.y + a.height, b.y + b.height)
+    if (x2 <= x1 || y2 <= y1) return null
+    return { x: x1, y: y1, width: x2 - x1, height: y2 - y1 }
+  }
+
+  private drawNode(node: LayoutNode, parentBg: RGBA, clipRect: ClipRect): void {
     const element = this.findElementByNode(node)
     if (!element) return
 
@@ -273,10 +289,13 @@ export class TUI {
           : RGBA.fromHex(element.props.backgroundColor as string)
         : parentBg
 
-      const startY = Math.max(0, node.rect.y)
-      const endY = Math.min(node.rect.y + node.rect.height, this.height)
-      const startX = Math.max(0, node.rect.x)
-      const endX = Math.min(node.rect.x + node.rect.width, this.width)
+      const boxClip = this.intersectRect(clipRect, node.rect)
+      if (!boxClip) return
+
+      const startY = Math.max(0, boxClip.y)
+      const endY = Math.min(boxClip.y + boxClip.height, this.height)
+      const startX = Math.max(0, boxClip.x)
+      const endX = Math.min(boxClip.x + boxClip.width, this.width)
       for (let y = startY; y < endY; y++) {
         for (let x = startX; x < endX; x++) {
           this.screen.setCell(x, y, " ", RGBA.fromHex("#000000"), bg, 0)
@@ -285,11 +304,18 @@ export class TUI {
 
       // Draw border if specified
       if (element.props.border) {
-        this.drawBorder(node, element, bg)
+        this.drawBorder(node, element, bg, boxClip)
       }
 
+      const contentClip = this.intersectRect(boxClip, {
+        x: node.rect.x + node.paddingLeft,
+        y: node.rect.y + node.paddingTop,
+        width: Math.max(0, node.rect.width - node.paddingLeft - node.paddingRight),
+        height: Math.max(0, node.rect.height - node.paddingTop - node.paddingBottom),
+      })
+
       for (const child of node.children) {
-        this.drawNode(child, bg)
+        if (contentClip) this.drawNode(child, bg, contentClip)
       }
     }
 
@@ -308,17 +334,20 @@ export class TUI {
       const attrs = element.props.attributes ?? 0
 
       const rect = node.rect
+      const textClip = this.intersectRect(clipRect, rect)
+      if (!textClip) return
+
       for (let i = 0; i < text.length && rect.x + i < this.width; i++) {
         const x = rect.x + i
         const y = rect.y
-        if (y >= 0 && y < this.height && x >= 0) {
+        if (y >= textClip.y && y < textClip.y + textClip.height && x >= textClip.x && x < textClip.x + textClip.width) {
           this.screen.setCell(x, y, text[i], fg, bg, attrs)
         }
       }
     }
   }
 
-  private drawBorder(node: LayoutNode, element: Element, bg: RGBA): void {
+  private drawBorder(node: LayoutNode, element: Element, bg: RGBA, clipRect: ClipRect): void {
     const border = element.props.border
     const sides = new Set<string>(
       border === true ? ["top", "bottom", "left", "right"] : Array.isArray(border) ? border : [],
@@ -341,31 +370,38 @@ export class TUI {
 
     const { x, y, width: w, height: h } = node.rect
 
-    if (sides.has("top") && y >= 0 && y < this.height) {
+    if (sides.has("top") && y >= clipRect.y && y < clipRect.y + clipRect.height && y < this.height) {
       for (let i = 1; i < w - 1 && x + i < this.width; i++) {
+        if (x + i < clipRect.x || x + i >= clipRect.x + clipRect.width) continue
         this.screen.setCell(x + i, y, hz, borderColor, bg, 0)
       }
-      if (sides.has("left") && x >= 0 && x < this.width) this.screen.setCell(x, y, tl, borderColor, bg, 0)
-      if (sides.has("right") && x + w - 1 < this.width) this.screen.setCell(x + w - 1, y, tr, borderColor, bg, 0)
+      if (sides.has("left") && x >= clipRect.x && x < clipRect.x + clipRect.width && x < this.width)
+        this.screen.setCell(x, y, tl, borderColor, bg, 0)
+      if (sides.has("right") && x + w - 1 >= clipRect.x && x + w - 1 < clipRect.x + clipRect.width && x + w - 1 < this.width)
+        this.screen.setCell(x + w - 1, y, tr, borderColor, bg, 0)
     }
 
-    if (sides.has("bottom") && y + h - 1 >= 0 && y + h - 1 < this.height) {
+    if (sides.has("bottom") && y + h - 1 >= clipRect.y && y + h - 1 < clipRect.y + clipRect.height && y + h - 1 < this.height) {
       for (let i = 1; i < w - 1 && x + i < this.width; i++) {
+        if (x + i < clipRect.x || x + i >= clipRect.x + clipRect.width) continue
         this.screen.setCell(x + i, y + h - 1, hz, borderColor, bg, 0)
       }
-      if (sides.has("left") && x >= 0 && x < this.width) this.screen.setCell(x, y + h - 1, bl, borderColor, bg, 0)
-      if (sides.has("right") && x + w - 1 < this.width)
+      if (sides.has("left") && x >= clipRect.x && x < clipRect.x + clipRect.width && x < this.width)
+        this.screen.setCell(x, y + h - 1, bl, borderColor, bg, 0)
+      if (sides.has("right") && x + w - 1 >= clipRect.x && x + w - 1 < clipRect.x + clipRect.width && x + w - 1 < this.width)
         this.screen.setCell(x + w - 1, y + h - 1, br, borderColor, bg, 0)
     }
 
-    if (sides.has("left") && x >= 0 && x < this.width) {
+    if (sides.has("left") && x >= clipRect.x && x < clipRect.x + clipRect.width && x < this.width) {
       for (let i = 1; i < h - 1 && y + i < this.height; i++) {
+        if (y + i < clipRect.y || y + i >= clipRect.y + clipRect.height) continue
         this.screen.setCell(x, y + i, vt, borderColor, bg, 0)
       }
     }
 
-    if (sides.has("right") && x + w - 1 >= 0 && x + w - 1 < this.width) {
+    if (sides.has("right") && x + w - 1 >= clipRect.x && x + w - 1 < clipRect.x + clipRect.width && x + w - 1 < this.width) {
       for (let i = 1; i < h - 1 && y + i < this.height; i++) {
+        if (y + i < clipRect.y || y + i >= clipRect.y + clipRect.height) continue
         this.screen.setCell(x + w - 1, y + i, vt, borderColor, bg, 0)
       }
     }
@@ -376,6 +412,7 @@ export class TUI {
       const label = ` ${title} `
       const startX = x + 2
       for (let i = 0; i < label.length && startX + i < this.width && startX + i < x + w - 1; i++) {
+        if (startX + i < clipRect.x || startX + i >= clipRect.x + clipRect.width) continue
         this.screen.setCell(startX + i, y, label[i], borderColor, bg, 0)
       }
     }

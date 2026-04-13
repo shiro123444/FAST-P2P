@@ -1,0 +1,11 @@
+Traceback (most recent call last):
+  File "C:\Users\shiro\AppData\Local\Temp\preach-preview-relay.py", line 135, in <module>
+    web.run_app(app, host='localhost', port=3001, handle_signals=False)
+    ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\shiro\AppData\Roaming\Python\Python313\site-packages\aiohttp\web.py", line 530, in run_app
+    loop.run_until_complete(main_task)
+    ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^
+  File "C:\ProgramData\miniconda3\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+PermissionError: [Errno 13] error while attempting to bind on address ('127.0.0.1', 3001): [winerror 10013] 以一种访问权限不允许的方式做了一个访问套接字的尝试。

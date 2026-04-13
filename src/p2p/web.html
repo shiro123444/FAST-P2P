@@ -2,7 +2,7 @@
 <html lang="zh">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /> <!-- 修复: 删除 user-scalable=no 允许用户缩放 -->
     <title>FAST P2P - 快速文件传输</title>
     <style>
       * {
@@ -70,6 +70,17 @@
         }
       }
 
+      /* 修复: 添加 prefers-reduced-motion 支持 */
+      @media (prefers-reduced-motion: reduce) {
+        .dot.waiting {
+          animation: none;
+        }
+        .btn,
+        .transfer-area {
+          transition: none;
+        }
+      }
+
       .room-info {
         background: #0d1117;
         border-radius: 6px;
@@ -128,6 +139,20 @@
       .btn:disabled {
         opacity: 0.5;
         cursor: not-allowed;
+      }
+
+      /* 修复: 添加焦点状态样式 */
+      .btn:focus-visible,
+      input:focus-visible,
+      .transfer-area:focus-visible,
+      .scan-area:focus-visible {
+        outline: 3px solid #58a6ff;
+        outline-offset: 2px;
+      }
+
+      /* 修复: 添加 active 状态支持触摸设备 */
+      .btn:active {
+        transform: scale(0.98);
       }
 
       .transfer-area {
@@ -258,15 +283,17 @@
         <div class="room-hint" id="roomHint">发送给接收方扫码</div>
       </div>
       <div id="joinArea">
-        <div class="scan-area" id="scanBtn">
-          <div style="font-size: 2em">📷</div>
+        <div class="scan-area" id="scanBtn" role="button" tabindex="0" aria-label="扫描二维码加入房间">
+          <div style="font-size: 2em" aria-hidden="true">📷</div>
           <div>扫描二维码加入</div>
           <div class="scan-hint">或输入房间码</div>
         </div>
+        <label for="manualCode" style="position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); border: 0;">输入房间码</label>
         <input
           type="text"
           id="manualCode"
           placeholder="输入房间码..."
+          aria-label="房间码输入框"
           style="
             width: 100%;
             padding: 10px;
@@ -280,42 +307,46 @@
             letter-spacing: 2px;
           "
         />
-        <button class="btn btn-primary" id="joinBtn" style="margin-top: 8px">加入房间</button>
+        <button class="btn btn-primary" id="joinBtn" style="margin-top: 8px" aria-label="加入房间">加入房间</button>
       </div>
-      <button class="btn btn-secondary" id="createBtn">创建新房间</button>
+      <button class="btn btn-secondary" id="createBtn" aria-label="创建新房间">创建新房间</button>
     </div>
 
     <!-- 文件发送区（发送方） -->
     <div class="panel hidden" id="sendPanel">
-      <div class="transfer-area" id="dropZone">
-        <div class="transfer-icon">📁</div>
+      <div class="transfer-area" id="dropZone" role="button" tabindex="0" aria-label="点击或拖拽文件到这里上传">
+        <div class="transfer-icon" aria-hidden="true">📁</div>
         <div class="transfer-text">点击或拖拽文件到这里</div>
         <div class="transfer-text" style="font-size: 0.8em; margin-top: 4px">或点击选择文件</div>
       </div>
-      <input type="file" id="fileInput" />
+      <input type="file" id="fileInput" aria-label="文件选择器" />
 
       <div class="progress-container hidden" id="sendProgress">
-        <div class="progress-bar"><div class="progress-fill" id="sendFill"></div></div>
-        <div class="progress-text" id="sendProgressText">0%</div>
+        <div class="progress-bar" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100" aria-label="发送进度">
+          <div class="progress-fill" id="sendFill"></div>
+        </div>
+        <div class="progress-text" id="sendProgressText" aria-live="polite">0%</div>
       </div>
 
-      <div class="file-list" id="sendFileList"></div>
+      <div class="file-list" id="sendFileList" role="list" aria-label="已发送文件列表"></div>
     </div>
 
     <!-- 文件接收区（接收方） -->
     <div class="panel hidden" id="recvPanel">
       <div style="text-align: center; padding: 20px">
-        <div style="font-size: 3em">📥</div>
+        <div style="font-size: 3em" aria-hidden="true">📥</div>
         <div style="margin-top: 8px">等待接收文件...</div>
       </div>
       <div class="progress-container hidden" id="recvProgress">
-        <div class="progress-bar"><div class="progress-fill" id="recvFill"></div></div>
-        <div class="progress-text" id="recvProgressText">0%</div>
+        <div class="progress-bar" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100" aria-label="接收进度">
+          <div class="progress-fill" id="recvFill"></div>
+        </div>
+        <div class="progress-text" id="recvProgressText" aria-live="polite">0%</div>
       </div>
-      <div class="file-list" id="recvFileList"></div>
+      <div class="file-list" id="recvFileList" role="list" aria-label="已接收文件列表"></div>
     </div>
 
-    <div class="logs" id="logs"></div>
+    <div class="logs" id="logs" role="log" aria-live="polite" aria-label="操作日志"></div>
 
     <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
     <script>
@@ -520,6 +551,9 @@
                 recvFill.style.width = pct + '%'
                 recvProgressText.textContent = `${pct}% - ${pendingFile.file.name}`
                 recvProgress.classList.remove('hidden')
+                // 修复: 更新进度条 aria 属性
+                const recvBar = recvProgress.querySelector('.progress-bar')
+                if (recvBar) recvBar.setAttribute('aria-valuenow', pct)
                 if (pendingFile.received === pendingFile.totalChunks) {
                   const blob = new Blob(pendingFile.chunks)
                   const url = URL.createObjectURL(blob)
@@ -590,6 +624,9 @@
           const pct = Math.round(sent / totalChunks * 100)
           sendFill.style.width = pct + '%'
           sendProgressText.textContent = `${pct}% - ${file.name}`
+          // 修复: 更新进度条 aria 属性
+          const sendBar = sendProgress.querySelector('.progress-bar')
+          if (sendBar) sendBar.setAttribute('aria-valuenow', pct)
           await new Promise(r => setTimeout(r, 5)) // 防止发送过快
         }
 
@@ -663,6 +700,14 @@
 
       dropZone.onclick = () => fileInput.click()
 
+      // 修复: 添加键盘支持
+      dropZone.onkeydown = (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          fileInput.click()
+        }
+      }
+
       dropZone.ondragover = (e) => {
         e.preventDefault()
         dropZone.classList.add('dragover')
@@ -680,6 +725,15 @@
       fileInput.onchange = () => {
         const file = fileInput.files[0]
         if (file) sendFile(file)
+      }
+
+      // 修复: 添加扫描按钮键盘支持
+      scanBtn.onkeydown = (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          // 这里可以添加扫描二维码的逻辑
+          manualCode.focus()
+        }
       }
 
       // 扫码唤起处理（通过 URL 参数）

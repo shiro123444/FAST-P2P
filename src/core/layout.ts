@@ -5,6 +5,9 @@ export type { LayoutRect, LayoutNode } from "./types"
 export interface BoxStyle {
   width?: number | "100%"
   height?: number | "100%"
+  position?: "absolute"
+  top?: number
+  left?: number
   backgroundColor?: ColorInput
   foregroundColor?: ColorInput
   flexDirection?: "row" | "column"
@@ -40,7 +43,9 @@ export class LayoutEngine {
     let width = node.rect.width
     let height = node.rect.height
 
-    if (node.children.length === 0) {
+    const flowChildren = node.children.filter((child) => child.position !== "absolute")
+
+    if (flowChildren.length === 0) {
       return { width: Math.max(0, width), height: Math.max(0, height) }
     }
 
@@ -48,7 +53,7 @@ export class LayoutEngine {
     const gap = node.gap ?? 0
     const { top, right, bottom, left } = this.getPadding(node)
 
-    const childSizes = node.children.map((child) => this.measureIntrinsic(child))
+    const childSizes = flowChildren.map((child) => this.measureIntrinsic(child))
     const totalGap = gap * Math.max(0, childSizes.length - 1)
 
     if (width <= 0) {
@@ -107,8 +112,10 @@ export class LayoutEngine {
     const mainAxis = isRow ? "width" : "height"
     const crossAxis = isRow ? "height" : "width"
     const gap = node.gap ?? 0
+    const flowChildren = children.filter((child) => child.position !== "absolute")
+    const absoluteChildren = children.filter((child) => child.position === "absolute")
 
-    for (const child of children) {
+    for (const child of flowChildren) {
       const measured = this.measureIntrinsic(child)
 
       if (isRow) {
@@ -132,7 +139,7 @@ export class LayoutEngine {
     let totalFlexShrink = 0
     const childMainSizes: number[] = []
 
-    for (const child of children) {
+    for (const child of flowChildren) {
       const flexBasis = child.flexBasis > 0 ? child.flexBasis : isRow ? child.rect.width : child.rect.height
       const flexGrow = child.flexGrow || 0
       const flexShrink = child.flexShrink ?? 1
@@ -147,7 +154,7 @@ export class LayoutEngine {
       }
     }
 
-    const totalGapSpace = gap * (children.length - 1)
+    const totalGapSpace = gap * Math.max(0, flowChildren.length - 1)
     const contentSize = childMainSizes.reduce((a, b) => a + b, 0)
     const remainingSpace = contentRect[mainAxis] - contentSize - totalGapSpace
 
@@ -156,7 +163,7 @@ export class LayoutEngine {
 
     if (remainingSpace > 0 && totalFlexGrow > 0) {
       const flexGrowPerUnit = remainingSpace / totalFlexGrow
-      for (const child of children) {
+      for (const child of flowChildren) {
         if (child.flexGrow > 0 && child.flexBasis === 0) {
           const newSize = Math.floor(flexGrowPerUnit * child.flexGrow)
           if (isRow) {
@@ -168,7 +175,7 @@ export class LayoutEngine {
       }
     } else if (remainingSpace < 0 && totalFlexShrink > 0) {
       const shrinkPerUnit = remainingSpace / totalFlexShrink
-      for (const child of children) {
+      for (const child of flowChildren) {
         if (child.flexBasis === 0 && child.flexShrink > 0) {
           const shrink = Math.floor(shrinkPerUnit * child.flexShrink)
           if (isRow) {
@@ -181,21 +188,21 @@ export class LayoutEngine {
     }
 
     const justify = node.justifyContent || "flex-start"
-    const totalChildMainSize = children.reduce((sum, c) => sum + (isRow ? c.rect.width : c.rect.height), 0)
-    const totalMainWithGap = totalChildMainSize + actualGap * (children.length - 1)
+    const totalChildMainSize = flowChildren.reduce((sum, c) => sum + (isRow ? c.rect.width : c.rect.height), 0)
+    const totalMainWithGap = totalChildMainSize + actualGap * Math.max(0, flowChildren.length - 1)
 
     if (justify === "center") {
       mainOffset = Math.floor((contentRect[mainAxis] - totalMainWithGap) / 2)
     } else if (justify === "flex-end") {
       mainOffset = contentRect[mainAxis] - totalMainWithGap
-    } else if (justify === "space-between" && children.length > 1) {
-      actualGap = (contentRect[mainAxis] - totalChildMainSize) / (children.length - 1)
-    } else if (justify === "space-around" && children.length > 0) {
-      actualGap = (contentRect[mainAxis] - totalChildMainSize) / (children.length + 1)
+    } else if (justify === "space-between" && flowChildren.length > 1) {
+      actualGap = (contentRect[mainAxis] - totalChildMainSize) / (flowChildren.length - 1)
+    } else if (justify === "space-around" && flowChildren.length > 0) {
+      actualGap = (contentRect[mainAxis] - totalChildMainSize) / (flowChildren.length + 1)
       mainOffset = actualGap
     }
 
-    for (const child of children) {
+    for (const child of flowChildren) {
       if (isRow) {
         child.rect.x = contentRect.x + mainOffset
         child.rect.y = contentRect.y
@@ -226,6 +233,15 @@ export class LayoutEngine {
 
       this.calculate(child, child.rect)
     }
+
+    for (const child of absoluteChildren) {
+      const measured = this.measureIntrinsic(child)
+      child.rect.x = contentRect.x + (child.left ?? 0)
+      child.rect.y = contentRect.y + (child.top ?? 0)
+      child.rect.width = child.rect.width > 0 ? child.rect.width : measured.width
+      child.rect.height = child.rect.height > 0 ? child.rect.height : measured.height
+      this.calculate(child, child.rect)
+    }
   }
 
   static fromStyle(style: BoxStyle, children: LayoutNode[]): LayoutNode {
@@ -238,6 +254,9 @@ export class LayoutEngine {
 
     return {
       rect: { x: 0, y: 0, width: w, height: h },
+      position: style.position === "absolute" ? "absolute" : "flow",
+      top: style.top ?? 0,
+      left: style.left ?? 0,
       flexGrow: style.flexGrow ?? 0,
       flexShrink: style.flexShrink ?? 1,
       flexBasis: style.flexBasis ?? 0,

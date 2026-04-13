@@ -1,10 +1,13 @@
-import { RGBA, h, createTUI } from "../src"
+﻿import { RGBA, h, createTUI } from "../src"
 import QRCode from "qrcode"
 import { P2PSwarm } from "../src/p2p/swarm"
-import { sendFile, handleIncomingTransfer } from "../src/p2p/transfer"
+import { sendFile, handleIncomingTransfer, computeFileHash } from "../src/p2p/transfer"
 import type { TransferInfo, Message } from "../src/p2p/protocol"
-import { RelayClient } from "../src/p2p/relay-client"
-import { deriveKey, encryptChunk, decryptChunk } from "../src/p2p/crypto"
+import { RelayClient, type RelayFileMeta } from "../src/p2p/relay-client"
+import { isPrintableInputChar } from "../src/core/input"
+import { deriveKey, encryptChunk } from "../src/p2p/crypto"
+import { createLanServer, type LanPeer } from "../src/p2p/lan-server"
+import { pickLanIPv4 } from "../src/p2p/network"
 import fs from "fs"
 import path from "path"
 import os from "os"
@@ -29,6 +32,7 @@ const theme = {
   accent: RGBA.fromHex("#9d7cd8"),
 }
 
+const useAsciiChrome = process.platform === "win32"
 const logoLines = [
   "██████╗ ██████╗ ███████╗ █████╗  ██████╗██╗  ██╗",
   "██╔══██╗██╔══██╗██╔════╝██╔══██╗██╔════╝██║  ██║",
@@ -37,6 +41,7 @@ const logoLines = [
   "██║     ██║  ██║███████╗██║  ██║╚██████╗██║  ██║",
   "╚═╝     ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝",
 ]
+const logoWidth = logoLines.reduce((max, line) => Math.max(max, line.length), 0)
 
 type SlashCommand = {
   name: string
@@ -47,6 +52,8 @@ type SlashCommand = {
 const slashCommands: SlashCommand[] = [
   { name: "connect", usage: "/connect", description: "Start LAN server with QR code" },
   { name: "lsend", usage: "/lsend <file>", description: "Send file to connected phone" },
+  { name: "pcreate", usage: "/pcreate", description: "Create a direct swarm topic" },
+  { name: "pjoin", usage: "/pjoin <code>", description: "Join a direct swarm topic" },
   { name: "transfer", usage: "/transfer <file>", description: "Send file to peer via swarm" },
   { name: "rcreate", usage: "/rcreate", description: "Create relay room" },
   { name: "rjoin", usage: "/rjoin <room> [key]", description: "Join relay room" },
@@ -57,7 +64,7 @@ const slashCommands: SlashCommand[] = [
   { name: "quit", usage: "/quit", description: "Exit" },
 ]
 
-const commandsNeedArg = new Set(["transfer", "rjoin", "rsend", "lsend"])
+const commandsNeedArg = new Set(["transfer", "rjoin", "rsend", "lsend", "pjoin"])
 
 let inputValue = ""
 let commandCursor = 0
@@ -88,18 +95,20 @@ let relayKey: string | null = null
 let relayPeer: string | null = null
 const RELAY_URL = process.env.RELAY_URL ?? "ws://localhost:3000"
 
-let lanServer: { stop: () => void } | null = null
+let lanServer: { stop: () => Promise<void> } | null = null
 let lanServerPort = 3001
 let lanPeerConnected = false
-let lanPeerWs: any = null
+let lanPeerWs: LanPeer | null = null
 let qrLines: string[] = []
 let qrLoading = false
 let qrDismissed = false
 
 let pendingRelayTransfer: {
-  filePath: string
   id: string
-  key: Buffer
+  filename: string
+  size: number
+  filePath: string
+  hash: string
   ws: fs.WriteStream
   receivedChunks: number
   totalChunks: number
@@ -127,13 +136,7 @@ function formatBytes(bytes: number): string {
 }
 
 function getLocalIP(): string {
-  const nets = os.networkInterfaces()
-  for (const name of Object.keys(nets)) {
-    for (const net of nets[name] ?? []) {
-      if (net.family === "IPv4" && !net.internal) return net.address
-    }
-  }
-  return "127.0.0.1"
+  return pickLanIPv4(os.networkInterfaces())
 }
 
 function genCode(len = 6): string {
@@ -154,9 +157,9 @@ async function generateQRCode(text: string): Promise<string[]> {
       for (let x = 0; x < size; x++) {
         const top = modules[y * size + x] === 1
         const bot = y + 1 < size && modules[(y + 1) * size + x] === 1
-        if (top && bot) line += "█"
-        else if (top && !bot) line += "▀"
-        else if (!top && bot) line += "▄"
+        if (top && bot) line += "\u2588"
+        else if (top && !bot) line += "\u2580"
+        else if (!top && bot) line += "\u2584"
         else line += " "
       }
       lines.push(line)
@@ -216,6 +219,14 @@ function executeSelectedSuggestion(): boolean {
 
 function pickFile(): string | null {
   try {
+    if (process.platform === "win32") {
+      const result = execSync(
+        'powershell -NoProfile -STA -Command "[void][System.Reflection.Assembly]::LoadWithPartialName(\'System.Windows.Forms\'); $d = New-Object System.Windows.Forms.OpenFileDialog; if($d.ShowDialog() -eq \'OK\'){ Write-Output $d.FileName }"',
+      )
+        .toString()
+        .trim()
+      return result || null
+    }
     const result = execSync(`osascript -e 'POSIX path of (choose file with prompt "Select file to send:")' 2>/dev/null`)
       .toString()
       .trim()
@@ -259,6 +270,205 @@ function rerender() {
   tui.renderElement(App())
 }
 
+function getDownloadDir(): string {
+  const downloadDir = path.join(os.homedir(), "Downloads")
+  if (!fs.existsSync(downloadDir)) fs.mkdirSync(downloadDir, { recursive: true })
+  return downloadDir
+}
+
+function createIncomingFilePath(filename: string): string {
+  const downloadDir = getDownloadDir()
+  const parsed = path.parse(filename)
+  let candidate = path.join(downloadDir, filename)
+  let suffix = 1
+  while (fs.existsSync(candidate)) {
+    candidate = path.join(downloadDir, `${parsed.name} (${suffix})${parsed.ext}`)
+    suffix++
+  }
+  return candidate
+}
+
+function failPendingRelayTransfer(message: string) {
+  const current = pendingRelayTransfer
+  if (!current) return
+  pendingRelayTransfer = null
+  current.ws.end()
+  transfers.set(current.id, {
+    id: current.id,
+    filename: current.filename,
+    size: current.size,
+    hash: current.hash,
+    progress: current.size > 0 ? Math.min(1, current.bytesReceived / current.size) : 0,
+    speed: 0,
+    status: "error",
+    direction: "receive",
+    error: message,
+  })
+  log(`Relay receive failed: ${message}`)
+  rerender()
+}
+
+function beginRelayTransfer(meta: RelayFileMeta) {
+  if (pendingRelayTransfer && pendingRelayTransfer.id !== meta.id) {
+    failPendingRelayTransfer("Interrupted by a new incoming relay transfer")
+  }
+
+  if (pendingRelayTransfer?.id === meta.id) return
+
+  const filePath = createIncomingFilePath(meta.name)
+  const ws = fs.createWriteStream(filePath)
+  ws.on("error", (err) => {
+    if (pendingRelayTransfer?.id === meta.id) {
+      failPendingRelayTransfer(err.message)
+    }
+  })
+
+  pendingRelayTransfer = {
+    id: meta.id,
+    filename: meta.name,
+    size: meta.size,
+    filePath,
+    hash: meta.hash ?? "",
+    ws,
+    receivedChunks: 0,
+    totalChunks: meta.total,
+    startTime: Date.now(),
+    bytesReceived: 0,
+  }
+
+  transfers.set(meta.id, {
+    id: meta.id,
+    filename: meta.name,
+    size: meta.size,
+    hash: meta.hash ?? "",
+    progress: 0,
+    speed: 0,
+    status: "transferring",
+    direction: "receive",
+  })
+  log(`Incoming relay file: ${meta.name} (${formatBytes(meta.size)})`)
+  rerender()
+}
+
+function handleRelayChunk(data: Buffer, index: number, total: number, meta?: RelayFileMeta | null) {
+  if (!pendingRelayTransfer) {
+    if (!meta) {
+      log("Relay chunk ignored: missing file metadata")
+      return
+    }
+    beginRelayTransfer(meta)
+  } else if (meta && pendingRelayTransfer.id !== meta.id) {
+    beginRelayTransfer(meta)
+  }
+
+  const current = pendingRelayTransfer
+  if (!current) return
+
+  current.totalChunks = total > 0 ? total : current.totalChunks
+  current.ws.write(data)
+  current.receivedChunks = Math.max(current.receivedChunks + 1, index + 1)
+  current.bytesReceived += data.length
+
+  const elapsed = (Date.now() - current.startTime) / 1000
+  const progress =
+    current.size > 0 ? Math.max(0, Math.min(1, current.bytesReceived / current.size)) : current.receivedChunks / current.totalChunks
+
+  transfers.set(current.id, {
+    id: current.id,
+    filename: current.filename,
+    size: current.size,
+    hash: current.hash,
+    progress,
+    speed: elapsed > 0 ? current.bytesReceived / elapsed : 0,
+    status: "transferring",
+    direction: "receive",
+  })
+  throttledRerender()
+}
+
+async function finishRelayTransfer(hash: string) {
+  const current = pendingRelayTransfer
+  if (!current) return
+
+  pendingRelayTransfer = null
+  current.ws.end(async () => {
+    try {
+      const expectedHash = hash || current.hash
+      if (expectedHash) {
+        const actualHash = await computeFileHash(current.filePath)
+        if (actualHash !== expectedHash) {
+          transfers.set(current.id, {
+            id: current.id,
+            filename: current.filename,
+            size: current.size,
+            hash: expectedHash,
+            progress: current.size > 0 ? Math.min(1, current.bytesReceived / current.size) : 0,
+            speed: 0,
+            status: "error",
+            direction: "receive",
+            error: "Hash mismatch",
+          })
+          log(`Relay receive failed: hash mismatch for ${current.filename}`)
+          rerender()
+          return
+        }
+      }
+
+      transfers.set(current.id, {
+        id: current.id,
+        filename: current.filename,
+        size: current.size,
+        hash: hash || current.hash,
+        progress: 1,
+        speed: 0,
+        status: "done",
+        direction: "receive",
+      })
+      receivedFiles.unshift({ name: path.basename(current.filePath), path: current.filePath, size: current.size, time: Date.now() })
+      if (receivedFiles.length > 20) receivedFiles.pop()
+      log(`[OK] Relay received: ${current.filename}`)
+      rerender()
+    } catch (err: unknown) {
+      transfers.set(current.id, {
+        id: current.id,
+        filename: current.filename,
+        size: current.size,
+        hash: hash || current.hash,
+        progress: current.size > 0 ? Math.min(1, current.bytesReceived / current.size) : 0,
+        speed: 0,
+        status: "error",
+        direction: "receive",
+        error: getErrorMessage(err),
+      })
+      log(`Relay receive failed: ${getErrorMessage(err)}`)
+      rerender()
+    }
+  })
+}
+
+function bindRelayClient(client: RelayClient) {
+  client.on("peer-join", (peerId) => {
+    relayPeer = peerId
+    log(`Peer ${peerId} joined!`)
+    rerender()
+  })
+  client.on("peer-leave", () => {
+    relayPeer = null
+    log("Peer left")
+    rerender()
+  })
+  client.on("message", (data, index, total, meta) => {
+    handleRelayChunk(data, index, total, meta)
+  })
+  client.on("done", (hash) => {
+    void finishRelayTransfer(hash)
+  })
+  client.on("error", (err) => {
+    if (pendingRelayTransfer) failPendingRelayTransfer(err.message)
+    log(`Relay error: ${err.message}`)
+  })
+}
+
 async function initSwarm() {
   swarm = new P2PSwarm()
   await swarm.init()
@@ -277,7 +487,7 @@ async function initSwarm() {
   swarm.on("message", (peerId: string, msg: Message) => {
     if (msg.type === "offer") {
       log(`Incoming: ${msg.filename} (${formatBytes(msg.size)})`)
-      const savePath = path.join(os.homedir(), "Downloads")
+      const savePath = getDownloadDir()
       const transfer = handleIncomingTransfer(swarm!, peerId, msg, savePath, (t) => {
         transfers.set(t.id, { ...t })
         throttledRerender()
@@ -319,8 +529,6 @@ async function runCommand(raw: string) {
     }
     const ip = getLocalIP()
     lanServerPort = 3001
-    const connectUrl = `http://${ip}:${lanServerPort}`
-    const rooms = new Map<string, { creator: any; ws: any }>()
     const roomCode = genCode()
     let lanRecvFile: {
       name: string
@@ -330,48 +538,6 @@ async function runCommand(raw: string) {
       received: number
       ws: fs.WriteStream
     } | null = null
-
-    rooms.set(roomCode, {
-      creator: {
-        send: () => {},
-        close: () => {},
-        onMessage: (msg: any) => {
-          if (msg.type === "file_start") {
-            const downloadDir = path.join(os.homedir(), "Downloads")
-            if (!fs.existsSync(downloadDir)) fs.mkdirSync(downloadDir, { recursive: true })
-            const savePath = path.join(downloadDir, msg.filename)
-            lanRecvFile = {
-              name: msg.filename,
-              size: msg.size,
-              chunks: [],
-              total: msg.total,
-              received: 0,
-              ws: fs.createWriteStream(savePath),
-            }
-            log(`Incoming file: ${msg.filename} (${formatBytes(msg.size)})`)
-            rerender()
-          } else if (msg.type === "file_chunk") {
-            if (!lanRecvFile) return
-            lanRecvFile.chunks[msg.index] = msg.data
-            lanRecvFile.received++
-            lanRecvFile.ws.write(Buffer.from(msg.data, "base64"))
-            if (lanRecvFile.received % 20 === 0 || lanRecvFile.received === lanRecvFile.total) throttledRerender()
-          } else if (msg.type === "file_done") {
-            if (!lanRecvFile) return
-            const f = lanRecvFile
-            const savedPath = String(f.ws.path)
-            receivedFiles.unshift({ name: path.basename(savedPath), path: savedPath, size: f.total, time: Date.now() })
-            if (receivedFiles.length > 20) receivedFiles.pop()
-            f.ws.end(() => {
-              log("✓ Received: " + path.basename(savedPath))
-              lanRecvFile = null
-              rerender()
-            })
-          }
-        },
-      },
-      ws: null,
-    })
 
     const lanHtml = [
       '<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>FAST P2P</title>',
@@ -398,64 +564,63 @@ async function runCommand(raw: string) {
     ].join("")
 
     try {
-      const server = Bun.serve({
+      const server = await createLanServer({
         port: lanServerPort,
-        fetch(req, srv) {
-          const url = new URL(req.url)
-          if (url.pathname === "/health") return new Response("OK")
-          if (req.headers.get("upgrade")?.toLowerCase() === "websocket") {
-            const roomCodeFromPath = url.pathname.slice(1) || "room"
-            if (srv.upgrade(req, { data: { room: roomCodeFromPath } })) return undefined
-          }
-          return new Response(lanHtml, { headers: { "Content-Type": "text/html" } })
+        roomCode,
+        html: lanHtml,
+        onPeerConnected(peer) {
+          lanPeerWs = peer
+          lanPeerConnected = true
+          qrDismissed = true
+          log("Peer connected via LAN!")
+          rerender()
         },
-        websocket: {
-          open(ws: any) {
-            const room = rooms.get(ws.data.room)
-            if (room && !room.ws) {
-              room.ws = ws
-              lanPeerWs = ws
-              lanPeerConnected = true
-              qrDismissed = true
-              log("Peer connected via LAN!")
+        onPeerDisconnected() {
+          lanPeerWs = null
+          lanPeerConnected = false
+          qrDismissed = false
+          rerender()
+        },
+        onMessage(msg: any) {
+          if (msg.type === "file_start") {
+            const savePath = createIncomingFilePath(msg.filename)
+            lanRecvFile = {
+              name: msg.filename,
+              size: msg.size,
+              chunks: [],
+              total: msg.total,
+              received: 0,
+              ws: fs.createWriteStream(savePath),
+            }
+            log(`Incoming file: ${msg.filename} (${formatBytes(msg.size)})`)
+            rerender()
+          } else if (msg.type === "file_chunk") {
+            if (!lanRecvFile) return
+            lanRecvFile.chunks[msg.index] = msg.data
+            lanRecvFile.received++
+            lanRecvFile.ws.write(Buffer.from(msg.data, "base64"))
+            if (lanRecvFile.received % 20 === 0 || lanRecvFile.received === lanRecvFile.total) throttledRerender()
+          } else if (msg.type === "file_done") {
+            if (!lanRecvFile) return
+            const f = lanRecvFile
+            const savedPath = String(f.ws.path)
+            receivedFiles.unshift({ name: path.basename(savedPath), path: savedPath, size: f.size, time: Date.now() })
+            if (receivedFiles.length > 20) receivedFiles.pop()
+            f.ws.end(() => {
+              log("[OK] Received: " + path.basename(savedPath))
+              lanRecvFile = null
               rerender()
-            }
-            rerender()
-          },
-          message(ws: any, data: any) {
-            const room = rooms.get(ws.data.room)
-            if (!room) return
-            const str = typeof data === "string" ? data : data.toString()
-            const target = ws === room.creator ? room.ws : room.creator
-            if (target) target.send(str)
-            if (ws === room.ws && room.creator?.onMessage) {
-              try {
-                room.creator.onMessage(JSON.parse(str))
-              } catch {}
-            }
-            rerender()
-          },
-          close(ws: any) {
-            const room = rooms.get(ws.data.room)
-            if (room) {
-              if (room.creator === ws) {
-                room.ws?.close()
-                rooms.delete(ws.data.room)
-              } else {
-                room.ws = null
-                lanPeerWs = null
-                lanPeerConnected = false
-                qrDismissed = false
-              }
-            }
-            rerender()
-          },
+            })
+          }
         },
       })
+      lanServerPort = server.port
+      const connectUrl = `http://${ip}:${lanServerPort}`
       lanServer = { stop: () => server.stop() }
       qrLoading = true
       qrLines = []
       qrDismissed = false
+      log("Using LAN address: " + ip)
       log("LAN server started at " + connectUrl)
       log("Scan QR code with your phone...")
       generateQRCode(connectUrl)
@@ -520,6 +685,34 @@ async function runCommand(raw: string) {
     return
   }
 
+  if (command === "pcreate") {
+    if (!swarm || !swarmReady) {
+      log("Swarm not ready")
+      return
+    }
+    const code = swarm.getCode() ?? swarm.generateCode()
+    await swarm.joinTopic(code)
+    log(`Direct topic ready: ${code}`)
+    log("Run /pjoin <code> on the other desktop, then use /transfer <file>")
+    rerender()
+    return
+  }
+
+  if (command === "pjoin") {
+    if (!arg) {
+      log("Usage: /pjoin <code>")
+      return
+    }
+    if (!swarm || !swarmReady) {
+      log("Swarm not ready")
+      return
+    }
+    await swarm.joinTopic(arg)
+    log(`Joined direct topic: ${arg}`)
+    rerender()
+    return
+  }
+
   if (command === "transfer" || command === "send") {
     if (!arg) {
       log("Usage: /transfer <file>")
@@ -532,6 +725,10 @@ async function runCommand(raw: string) {
     }
     if (!swarm) {
       log("Swarm not ready")
+      return
+    }
+    if (!swarm.getCode()) {
+      log("Join a direct topic first with /pcreate or /pjoin <code>")
       return
     }
     const peers = Array.from(swarm.getPeers().entries())
@@ -556,57 +753,7 @@ async function runCommand(raw: string) {
       return
     }
     relay = new RelayClient()
-    relay.on("peer-join", (peerId) => {
-      relayPeer = peerId
-      log(`Peer ${peerId} joined!`)
-      rerender()
-    })
-    relay.on("peer-leave", () => {
-      relayPeer = null
-      log("Peer left")
-      rerender()
-    })
-    relay.on("message", (chunk, _index, _total) => {
-      if (!pendingRelayTransfer) return
-      const decrypted = decryptChunk(chunk, pendingRelayTransfer.key)
-      pendingRelayTransfer.ws.write(decrypted)
-      pendingRelayTransfer.receivedChunks++
-      pendingRelayTransfer.bytesReceived += decrypted.length
-      const elapsed = (Date.now() - pendingRelayTransfer.startTime) / 1000
-      const progress = pendingRelayTransfer.receivedChunks / pendingRelayTransfer.totalChunks
-      transfers.set(pendingRelayTransfer.id, {
-        id: pendingRelayTransfer.id,
-        filename: path.basename(pendingRelayTransfer.filePath),
-        size: fs.statSync(pendingRelayTransfer.filePath).size,
-        hash: "",
-        progress,
-        speed: elapsed > 0 ? pendingRelayTransfer.bytesReceived / elapsed : 0,
-        status: progress >= 1 ? "done" : "transferring",
-        direction: "receive",
-      })
-      throttledRerender()
-    })
-    relay.on("done", (hash) => {
-      if (pendingRelayTransfer) {
-        pendingRelayTransfer.ws.end()
-        transfers.set(pendingRelayTransfer.id, {
-          id: pendingRelayTransfer.id,
-          filename: path.basename(pendingRelayTransfer.filePath),
-          size: fs.statSync(pendingRelayTransfer.filePath).size,
-          hash,
-          progress: 1,
-          speed: 0,
-          status: "done",
-          direction: "receive",
-        })
-        pendingRelayTransfer = null
-        log("Relay transfer complete!")
-        rerender()
-      }
-    })
-    relay.on("error", (err) => {
-      log(`Relay error: ${err.message}`)
-    })
+    bindRelayClient(relay)
     relay
       .connect(RELAY_URL)
       .then(() => {
@@ -643,57 +790,7 @@ async function runCommand(raw: string) {
       return
     }
     relay = new RelayClient()
-    relay.on("peer-join", (peerId) => {
-      relayPeer = peerId
-      log(`Peer ${peerId} joined!`)
-      rerender()
-    })
-    relay.on("peer-leave", () => {
-      relayPeer = null
-      log("Peer left")
-      rerender()
-    })
-    relay.on("message", (chunk, _index, _total) => {
-      if (!pendingRelayTransfer) return
-      const decrypted = decryptChunk(chunk, pendingRelayTransfer.key)
-      pendingRelayTransfer.ws.write(decrypted)
-      pendingRelayTransfer.receivedChunks++
-      pendingRelayTransfer.bytesReceived += decrypted.length
-      const elapsed = (Date.now() - pendingRelayTransfer.startTime) / 1000
-      const progress = pendingRelayTransfer.receivedChunks / pendingRelayTransfer.totalChunks
-      transfers.set(pendingRelayTransfer.id, {
-        id: pendingRelayTransfer.id,
-        filename: path.basename(pendingRelayTransfer.filePath),
-        size: fs.statSync(pendingRelayTransfer.filePath).size,
-        hash: "",
-        progress,
-        speed: elapsed > 0 ? pendingRelayTransfer.bytesReceived / elapsed : 0,
-        status: progress >= 1 ? "done" : "transferring",
-        direction: "receive",
-      })
-      throttledRerender()
-    })
-    relay.on("done", (hash) => {
-      if (pendingRelayTransfer) {
-        pendingRelayTransfer.ws.end()
-        transfers.set(pendingRelayTransfer.id, {
-          id: pendingRelayTransfer.id,
-          filename: path.basename(pendingRelayTransfer.filePath),
-          size: fs.statSync(pendingRelayTransfer.filePath).size,
-          hash,
-          progress: 1,
-          speed: 0,
-          status: "done",
-          direction: "receive",
-        })
-        pendingRelayTransfer = null
-        log("Relay transfer complete!")
-        rerender()
-      }
-    })
-    relay.on("error", (err) => {
-      log(`Relay error: ${err.message}`)
-    })
+    bindRelayClient(relay)
     relay
       .connect(RELAY_URL)
       .then(() => {
@@ -730,6 +827,7 @@ async function runCommand(raw: string) {
     const stat = fs.statSync(absPath)
     const filename = path.basename(absPath)
     const key = deriveKey(relayKey)
+    const fileHash = await computeFileHash(absPath)
     const CHUNK_SIZE = 32 * 1024
     const totalChunks = Math.ceil(stat.size / CHUNK_SIZE)
     const id = crypto.randomBytes(4).toString("hex")
@@ -737,7 +835,7 @@ async function runCommand(raw: string) {
       id,
       filename,
       size: stat.size,
-      hash: "",
+      hash: fileHash,
       progress: 0,
       speed: 0,
       status: "transferring",
@@ -750,9 +848,10 @@ async function runCommand(raw: string) {
     let chunkIndex = 0
     const startTime = Date.now()
     let sentBytes = 0
+    const meta: RelayFileMeta = { id, name: filename, size: stat.size, total: totalChunks, hash: fileHash }
     stream.on("data", (chunk) => {
       const encrypted = encryptChunk(Buffer.from(chunk as Buffer), key)
-      relay!.sendChunk(encrypted, chunkIndex, totalChunks)
+      relay!.sendChunk(encrypted, chunkIndex, totalChunks, chunkIndex === 0 ? meta : null)
       sentBytes += chunk.length
       chunkIndex++
       const elapsed = (Date.now() - startTime) / 1000
@@ -762,7 +861,7 @@ async function runCommand(raw: string) {
       rerender()
     })
     stream.on("end", () => {
-      relay!.sendDone("")
+      relay!.sendDone(fileHash)
       transfer.status = "done"
       transfer.progress = 1
       transfers.set(id, { ...transfer })
@@ -791,6 +890,7 @@ async function runCommand(raw: string) {
       log("Not in relay room")
       return
     }
+    if (pendingRelayTransfer) failPendingRelayTransfer("Transfer cancelled")
     relay.disconnect()
     relay = null
     relayRoom = null
@@ -816,7 +916,8 @@ async function runCommand(raw: string) {
 function trim(text: string, width: number) {
   if (width <= 0) return ""
   if (text.length <= width) return text
-  return text.slice(0, width - 1) + "…"
+  if (width <= 3) return ".".repeat(width)
+  return text.slice(0, width - 3) + "..."
 }
 
 function fit(left: string, right: string, width: number) {
@@ -827,11 +928,43 @@ function fit(left: string, right: string, width: number) {
   return trim(left, width - right.length - 1) + " " + right
 }
 
+function padLine(text: string, width: number) {
+  if (width <= 0) return ""
+  const clipped = trim(text, width)
+  return clipped + " ".repeat(Math.max(0, width - clipped.length))
+}
+
+const chromeChars = useAsciiChrome
+  ? {
+      input: { topLeft: "+", topRight: "+", bottomLeft: "+", bottomRight: "+", horizontal: "-", vertical: "|" },
+      panel: { topLeft: "+", topRight: "+", bottomLeft: "+", bottomRight: "+", horizontal: "-", vertical: "|" },
+      divider: "-",
+      marker: ">",
+      connected: "* Connected",
+      success: "OK",
+      error: "ER",
+      send: "->",
+      receive: "<-",
+      bullet: "*",
+    }
+  : {
+      input: { topLeft: "┌", topRight: "┐", bottomLeft: "└", bottomRight: "┘", horizontal: "─", vertical: "│" },
+      panel: { topLeft: "┌", topRight: "┐", bottomLeft: "└", bottomRight: "┘", horizontal: "─", vertical: "│" },
+      divider: "─",
+      marker: "▸",
+      connected: "● Connected",
+      success: "✓",
+      error: "✗",
+      send: "↑",
+      receive: "↓",
+      bullet: "▸",
+    }
+
 function spin() {
-  return ["◜", "◠", "◝", "◞", "◡", "◟"][tick % 6]
+  return ["-", "\\", "|", "/", "-", "\\"][tick % 6]
 }
 function pulse() {
-  return ["·", "•", "●", "•"][tick % 4]
+  return [".", "o", "O", "o"][tick % 4]
 }
 
 function topBar(width: number) {
@@ -863,6 +996,7 @@ function statusBar(width: number, hint: string) {
 function InputBox(width: number) {
   const isLAN = lanServer !== null
   const tone = isLAN ? (lanPeerConnected ? theme.success : theme.primary) : theme.primary
+  const innerWidth = Math.max(1, width - 4)
   const body =
     inputValue.length > 0
       ? `${inputValue}_`
@@ -877,62 +1011,67 @@ function InputBox(width: number) {
       width,
       backgroundColor: theme.element,
       flexDirection: "column",
-      border: ["left"],
+      border: true,
       borderColor: tone,
-      customBorderChars: {
-        topLeft: "",
-        topRight: "",
-        bottomLeft: "╹",
-        bottomRight: "",
-        horizontal: " ",
-        vertical: "┃",
-      },
+      customBorderChars: chromeChars.input,
       paddingLeft: 2,
       paddingRight: 2,
       paddingTop: 1,
       paddingBottom: 1,
       gap: 1,
     },
-    h("text", { fg: theme.text }, ` ${trim(body, Math.max(1, width - 4))}`),
-    h("text", { fg: theme.textMuted }, " enter run  tab complete  ctrl+k commands"),
+    h("text", { fg: theme.text }, ` ${padLine(body, innerWidth)}`),
+    h("text", { fg: theme.textMuted }, ` ${padLine("enter run  tab complete  ctrl+k commands", innerWidth)}`),
+  )
+}
+
+function HomeInputCard(width: number) {
+  const body = inputValue.length > 0 ? `${inputValue}_` : "Type / for commands"
+  const textWidth = Math.max(1, width - 7)
+
+  return h(
+    "box",
+    {
+      width,
+      backgroundColor: theme.element,
+      flexDirection: "row",
+      paddingTop: 1,
+      paddingBottom: 1,
+      paddingLeft: 2,
+      paddingRight: 2,
+      gap: 2,
+    },
+    h("box", { width: 1, backgroundColor: theme.primary }),
+    h(
+      "box",
+      { flexGrow: 1, flexDirection: "column", gap: 1 },
+      h("text", { fg: inputValue.length > 0 ? theme.text : theme.textMuted }, padLine(body, textWidth)),
+      h("text", { fg: theme.textMuted }, padLine("tab complete   ctrl+k commands   enter run", textWidth)),
+    ),
   )
 }
 
 function CommandPalette(width: number, suggestions: SlashCommand[]) {
   const visible = suggestions.slice(0, 5)
-  const title = inputValue.length <= 1 ? "Suggested" : "Commands"
   const lines = visible.map((item, index) => {
     const active = index === commandCursor
-    const marker = active ? "▸" : " "
+    const marker = active ? chromeChars.marker : " "
     const color = active ? theme.primary : theme.text
     return h("text", { fg: color }, ` ${marker} ${item.usage}`)
   })
-  const desc = visible[commandCursor]?.description ?? ""
   return h(
     "box",
     {
       width,
-      border: ["left"],
-      borderColor: theme.border,
       backgroundColor: theme.panel,
-      customBorderChars: {
-        topLeft: "┌",
-        topRight: "┐",
-        bottomLeft: "└",
-        bottomRight: "┘",
-        horizontal: "─",
-        vertical: "│",
-      },
       flexDirection: "column",
       paddingLeft: 2,
-      paddingRight: 1,
+      paddingRight: 2,
       paddingTop: 1,
       paddingBottom: 1,
-      gap: 1,
+      gap: 0,
     },
-    h("text", { fg: theme.textMuted }, title),
     ...lines,
-    h("text", { fg: theme.secondary }, desc.slice(0, Math.max(1, width - 4))),
   )
 }
 
@@ -950,7 +1089,7 @@ function Sidebar(width: number, height: number) {
     for (const file of visible) {
       const size = formatBytes(file.size)
       const name = trim(file.name, Math.max(1, width - size.length - 4))
-      lines.push(h("text", { fg: theme.success }, ` ▸ ${name}`))
+      lines.push(h("text", { fg: theme.success }, ` ${chromeChars.bullet} ${name}`))
       lines.push(h("text", { fg: theme.textMuted }, `   ${size}`))
     }
     if (receivedFiles.length > visible.length)
@@ -961,7 +1100,7 @@ function Sidebar(width: number, height: number) {
     "box",
     { width, height, backgroundColor: theme.panel, flexDirection: "column", padding: 1, gap: 0 },
     h("text", { fg: theme.text }, " Received"),
-    h("text", { fg: theme.borderSubtle }, "─".repeat(Math.max(1, width - 4))),
+    h("text", { fg: theme.borderSubtle }, chromeChars.divider.repeat(Math.max(1, width - 4))),
     ...lines,
   )
 }
@@ -974,14 +1113,14 @@ function ActivityPanel(width: number, height: number) {
   if (items.length > 0) {
     const recent = items.slice(-3)
     for (const t of recent) {
-      const dir = t.direction === "send" ? "↑" : "↓"
+      const dir = t.direction === "send" ? chromeChars.send : chromeChars.receive
       const pct = Math.round(t.progress * 100)
       const bar = progressBar(t.progress, 10)
       const color = t.status === "done" ? theme.success : t.status === "error" ? theme.error : theme.primary
-      const status = t.status === "done" ? "✓" : t.status === "error" ? "✗" : `${pct}%`
+      const status = t.status === "done" ? chromeChars.success : t.status === "error" ? chromeChars.error : `${pct}%`
       lines.push(h("text", { fg: color }, ` ${dir} ${trim(t.filename, 16).padEnd(16)} ${bar} ${status.padStart(4)}`))
     }
-    lines.push(h("text", { fg: theme.borderSubtle }, "─".repeat(Math.max(1, width - 4))))
+    lines.push(h("text", { fg: theme.borderSubtle }, chromeChars.divider.repeat(Math.max(1, width - 4))))
   }
 
   const logSpace = maxRows - lines.length
@@ -993,7 +1132,7 @@ function ActivityPanel(width: number, height: number) {
     "box",
     { width, height, backgroundColor: theme.panel, flexDirection: "column", padding: 1, gap: 0 },
     h("text", { fg: theme.text }, " Activity"),
-    h("text", { fg: theme.borderSubtle }, "─".repeat(Math.max(1, width - 4))),
+    h("text", { fg: theme.borderSubtle }, chromeChars.divider.repeat(Math.max(1, width - 4))),
     ...lines,
   )
 }
@@ -1009,11 +1148,11 @@ function QRPanel(width: number, height: number) {
     h(
       "text",
       { fg: lanPeerConnected ? theme.success : theme.primary },
-      ` ${lanPeerConnected ? "● Connected" : spin() + " Scan QR"}`,
+      ` ${lanPeerConnected ? chromeChars.connected : spin() + " Scan QR"}`,
     ),
   )
   lines.push(h("text", { fg: theme.textMuted }, ` ${url}`))
-  lines.push(h("text", { fg: theme.borderSubtle }, "─".repeat(Math.max(1, width - 4))))
+  lines.push(h("text", { fg: theme.borderSubtle }, chromeChars.divider.repeat(Math.max(1, width - 4))))
 
   if (qrLines.length > 0) {
     const qrWidth = qrLines[0].length
@@ -1034,18 +1173,53 @@ function QRPanel(width: number, height: number) {
     "box",
     { width, height, backgroundColor: theme.panel, flexDirection: "column", padding: 1, gap: 0 },
     h("text", { fg: theme.text }, " LAN Share"),
-    h("text", { fg: theme.borderSubtle }, "─".repeat(Math.max(1, width - 4))),
+    h("text", { fg: theme.borderSubtle }, chromeChars.divider.repeat(Math.max(1, width - 4))),
     ...lines,
   )
 }
 
-function LogoPanel() {
+function LogoPanel(compact = false) {
   const lines: any[] = []
   for (const line of logoLines) lines.push(h("text", { fg: RGBA.fromHex("#58a6ff") }, line))
-  lines.push(h("text", {}, ""))
-  lines.push(h("text", { fg: theme.text }, "FAST P2P file transfer hub"))
-  lines.push(h("text", { fg: theme.textMuted }, "Type / to open commands"))
+  if (!compact) {
+    lines.push(h("text", {}, ""))
+    lines.push(h("text", { fg: theme.text }, "FAST P2P file transfer hub"))
+    lines.push(h("text", { fg: theme.textMuted }, "Type / to open commands"))
+  }
   return h("box", { flexDirection: "column", alignItems: "center" }, ...lines)
+}
+
+function HomeHero(width: number, height: number, suggestions: SlashCommand[], showPalette: boolean) {
+  const cardWidth = Math.max(44, Math.min(width - 10, logoWidth + 6))
+  const topOffset = Math.max(2, Math.floor((height - 16) / 2))
+  const cardLeft = Math.max(0, Math.floor((width - cardWidth) / 2))
+  const paletteTop = logoLines.length + 1
+  return h(
+    "box",
+    {
+      width,
+      height,
+      flexDirection: "column",
+      alignItems: "center",
+      justifyContent: "flex-start",
+      paddingTop: topOffset,
+      gap: 1,
+    },
+    LogoPanel(),
+    HomeInputCard(cardWidth),
+    showPalette
+      ? h(
+          "box",
+          {
+            position: "absolute",
+            left: cardLeft,
+            top: paletteTop,
+            width: cardWidth,
+          },
+          CommandPalette(cardWidth, suggestions),
+        )
+      : null,
+  )
 }
 
 function App() {
@@ -1069,7 +1243,7 @@ function App() {
       "box",
       { flexGrow: 1, flexDirection: "column", paddingLeft: 2, paddingRight: 2, paddingTop: 1, gap: 1 },
       isHome
-        ? h("box", { flexGrow: 1, alignItems: "center", justifyContent: "center" }, LogoPanel())
+        ? HomeHero(width - 4, height - 6, suggestions, showPalette)
         : h(
             "box",
             { flexGrow: 1, flexDirection: "row", gap: 2 },
@@ -1081,8 +1255,8 @@ function App() {
             qrDismissed ? null : QRPanel(Math.floor((width - 4 - 42) / 2), height - 12),
             Sidebar(42, height - 12),
           ),
-      showPalette ? CommandPalette(width - 4, suggestions) : null,
-      InputBox(width - 4),
+      isHome ? null : showPalette ? CommandPalette(width - 4, suggestions) : null,
+      isHome ? null : InputBox(width - 4),
     ),
     statusBar(width, hint),
   )
@@ -1158,7 +1332,9 @@ tui.onKey((evt) => {
     evt.preventDefault()
     void shutdown(0)
     return
-  } else if (evt.key && evt.key.length === 1 && !evt.ctrl && !evt.meta) {
+  } else if (evt.key && evt.key.length === 1 && !isPrintableInputChar(evt.key)) {
+    evt.preventDefault()
+  } else if (evt.key && isPrintableInputChar(evt.key) && !evt.ctrl && !evt.meta) {
     inputValue += evt.key
     evt.preventDefault()
   }
@@ -1167,3 +1343,4 @@ tui.onKey((evt) => {
 
 rerender()
 log("FAST P2P ready. Type /help")
+

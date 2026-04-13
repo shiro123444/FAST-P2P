@@ -110,6 +110,10 @@ export function handleIncomingTransfer(
     direction: "receive",
   }
 
+  if (!fs.existsSync(savePath)) {
+    fs.mkdirSync(savePath, { recursive: true })
+  }
+
   const filePath = path.join(savePath, offer.filename)
   const writeStream = fs.createWriteStream(filePath)
   let receivedBytes = 0
@@ -151,6 +155,13 @@ export function handleIncomingTransfer(
       onProgress(transfer)
     }
   }
+
+  writeStream.on("error", (err) => {
+    swarm.removeListener("message", handler)
+    transfer.status = "error"
+    transfer.error = err.message
+    onProgress(transfer)
+  })
 
   swarm.on("message", handler)
   return transfer

@@ -7,6 +7,9 @@ export interface LayoutRect {
 
 export interface LayoutNode {
   rect: LayoutRect
+  position?: "flow" | "absolute"
+  top?: number
+  left?: number
   flexGrow: number
   flexShrink: number
   flexBasis: number
@@ -114,6 +117,9 @@ export interface Renderable {
 export interface BoxProps {
   width?: number | "100%"
   height?: number | "100%"
+  position?: "absolute"
+  top?: number
+  left?: number
   backgroundColor?: ColorInput
   foregroundColor?: ColorInput
   flexDirection?: "row" | "column"

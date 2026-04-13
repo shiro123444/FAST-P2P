@@ -20,4 +20,4 @@ export function decodePasteBytes(bytes: Uint8Array): string {
 export { TUI, createTUI } from "./tui"
 export { ScreenBuffer, ANSI } from "./screen"
 export { LayoutEngine } from "./layout"
-export { InputHandler } from "./input"
+export { InputHandler, isPrintableInputChar } from "./input"

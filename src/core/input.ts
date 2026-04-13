@@ -11,10 +11,20 @@ const KEY_ALIASES: Record<string, string> = {
   "\n": "return",
   "\t": "tab",
   " ": "space",
+  "\x08": "backspace",
   "\x7f": "backspace",
   "\x03": "ctrl+c",
   "\x04": "ctrl+d",
   "\x1a": "ctrl+z",
+}
+
+export function isPrintableInputChar(value: string): boolean {
+  if (Array.from(value).length !== 1) return false
+  const code = value.codePointAt(0)
+  if (code === undefined) return false
+  if (code < 0x20) return false
+  if (code >= 0x7f && code <= 0x9f) return false
+  return true
 }
 
 function parseModifier(modifier?: number): { ctrl: boolean; meta: boolean; shift: boolean } {
