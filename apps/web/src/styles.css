@@ -62,6 +62,13 @@
   --ink-muted: rgba(245, 245, 245, 0.5);
   --shadow: 0 28px 80px rgba(0, 0, 0, 0.4);
   --shadow-soft: 0 16px 42px rgba(0, 0, 0, 0.3);
+  --cinema-bg-top: 12 14 18;
+  --cinema-bg-bottom: 7 9 12;
+  --cinema-ink-rgb: 244 246 248;
+  --cinema-muted-rgb: 172 178 186;
+  --cinema-line-rgb: 214 220 228;
+  --cinema-accent-rgb: 132 168 255;
+  --cinema-glow-rgb: 72 88 122;
 }
 
 * {
@@ -3506,6 +3513,11 @@ body {
   opacity: 0 !important;
 }
 
+.page-shell.is-intro-entrance .depth-scene:not(.depth-scene-hero) {
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
 .page-shell.is-intro-ready .cinema-chrome,
 .page-shell.is-intro-ready .top-rail,
 .page-shell.is-intro-ready .theme-toggle,
@@ -3586,7 +3598,6 @@ body {
     linear-gradient(135deg, rgb(var(--cinema-line-rgb) / 0.04), transparent 42%);
   opacity: var(--scene-presence, 0);
   pointer-events: none;
-  transition: opacity 560ms var(--curve-out);
 }
 
 .story-track {
@@ -3595,6 +3606,11 @@ body {
 
 .story-step {
   min-height: 0;
+}
+
+.page-shell.is-intro-entrance .depth-scene:not(.depth-scene-hero) .scene-heading-track,
+.page-shell.is-intro-entrance .depth-scene:not(.depth-scene-hero) .scene-grid {
+  opacity: 0 !important;
 }
 
 .depth-scene {
@@ -3711,7 +3727,6 @@ body {
   transform-style: preserve-3d;
   /* 移除 will-change，减少合成层 */
   backface-visibility: hidden;
-  transition: opacity 520ms var(--curve-out);
 }
 
 .scene-media-card:nth-child(2) {
@@ -3802,6 +3817,12 @@ body {
     );
   transform-style: preserve-3d;
   will-change: transform;
+}
+
+.story-shell:not(.has-three-title-stage) .scene-heading-layer {
+  transform: none;
+  transform-style: flat;
+  will-change: auto;
 }
 
 .three-title-stage {
@@ -4037,6 +4058,32 @@ body {
   letter-spacing: 0;
 }
 
+.story-shell:not(.has-three-title-stage) .scene-heading-track {
+  transform:
+    translate3d(
+      calc(var(--heading-lane-x, -24vw) * (1 - var(--scene-focus, 0)) * 0.18 + var(--mouse-x, 0) * -4px),
+      calc(var(--heading-lane-y, 0vh) * (1 - var(--scene-focus, 0)) * 0.4 + var(--mouse-y, 0) * 4px + (1 - var(--scene-title-progress, 0)) * 18px),
+      0
+    )
+    scale(calc(0.78 + var(--scene-title-progress, 0) * 0.22));
+  transform-style: flat;
+  will-change: auto;
+}
+
+.story-shell:not(.has-three-title-stage) .scene-title-line {
+  transform: none;
+}
+
+.story-shell:not(.has-three-title-stage) .scene-title {
+  transform-style: flat;
+}
+
+.story-shell:not(.has-three-title-stage) .scene-title-glyph {
+  transform: none;
+  opacity: 1;
+  will-change: auto;
+}
+
 .scene-body {
   width: min(100%, var(--heading-copy-width, 760px));
   max-width: 38rem;
@@ -4075,7 +4122,6 @@ body {
     );
   transform-style: preserve-3d;
   backface-visibility: hidden;
-  transition: opacity 520ms var(--curve-out);
 }
 
 .scene-ledger,
@@ -4563,8 +4609,43 @@ body {
     display: none;
   }
 
+  .cinema-shell {
+    height: auto;
+    min-height: 100svh;
+    overflow: visible;
+  }
+
+  .cinema-stage {
+    height: auto;
+    min-height: auto;
+    overflow: visible;
+    perspective: none;
+    transform: none;
+    transform-style: flat;
+  }
+
+  .cinema-stage::before,
+  .cinema-stage::after {
+    display: none;
+  }
+
   .depth-scene {
+    position: relative;
+    inset: auto;
     padding: 104px 28px 42px;
+    align-items: start;
+    align-content: start;
+    gap: 20px;
+    overflow: visible;
+    transform: none;
+    transform-style: flat;
+    pointer-events: auto;
+  }
+
+  .depth-scene::before {
+    inset: auto 0 0;
+    opacity: 0;
+    transform: none;
   }
 
   .scene-grid-hero,
@@ -4585,21 +4666,62 @@ body {
   .scene-heading-track {
     padding: 0 28px;
   }
-}
 
-@media (max-width: 768px) {
-  .cinema-stage,
+  .scene-heading-layer,
   .scene-heading-track,
   .scene-grid,
   .scene-copy,
   .scene-aside,
+  .scene-body,
   .scene-ledger,
   .scene-room-readout,
   .scene-surface,
   .future-item {
     transform: none;
+    transform-style: flat;
+    will-change: auto;
   }
 
+  .scene-heading-layer {
+    position: relative;
+    inset: auto;
+    z-index: 4;
+    display: block;
+    margin-bottom: 18px;
+  }
+
+  .scene-heading-track {
+    width: 100%;
+    gap: 12px;
+    opacity: 1;
+  }
+
+  .scene-heading-layer-left,
+  .scene-heading-layer-right,
+  .scene-heading-layer-hero {
+    --heading-lane-x: 0vw;
+    --heading-text-align: left;
+    --heading-justify: start;
+  }
+
+  .scene-body {
+    opacity: 1;
+  }
+
+  .scene-volume,
+  .scene-volume-plane,
+  .scene-volume-fog {
+    display: none;
+    opacity: 0 !important;
+    transform: none;
+  }
+
+  .scene-copy-support-empty {
+    display: none;
+  }
+}
+
+@media (max-width: 768px) {
   .top-rail {
     top: 16px;
     left: 14px;
@@ -4645,43 +4767,29 @@ body {
     right: 14px;
   }
 
-  .cinema-shell {
-    height: 100svh;
-    min-height: 100svh;
-  }
-
   .depth-scene {
     padding: 92px 18px 24px;
-    align-items: start;
-    transform:
-      translate3d(
-        0,
-        calc(var(--scene-offset, 0) * 7vh + var(--scene-drift, 0) * 0.2px),
-        calc((1 - var(--scene-progress, 0)) * -320px)
-      )
-      scale(calc(0.9 + var(--scene-progress, 0) * 0.1));
+    gap: 18px;
   }
 
   .depth-scene::before {
-    inset: 68px 10px 10px;
+    inset: auto 0 0;
   }
 
   .scene-title {
-    font-size: clamp(42px, 13vw, 78px);
+    font-size: clamp(38px, 11.5vw, 64px);
     line-height: 0.94;
   }
 
   .scene-heading-track {
-    padding: 0 18px;
-    gap: 12px;
+    padding: 0;
+    gap: 10px;
   }
 
-  .scene-heading-layer-left,
-  .scene-heading-layer-right,
-  .scene-heading-layer-hero {
-    --heading-lane-x: 0vw;
-    --heading-text-align: left;
-    --heading-justify: start;
+  .scene-grid {
+    width: 100%;
+    margin: 0;
+    gap: 16px;
   }
 
   .scene-copy {
@@ -4689,7 +4797,7 @@ body {
   }
 
   .scene-title-hero {
-    font-size: clamp(72px, 22vw, 132px);
+    font-size: clamp(56px, 18vw, 92px);
     line-height: 0.84;
   }
 
@@ -4698,9 +4806,35 @@ body {
     line-height: 1.7;
   }
 
+  .scene-ledger,
+  .scene-room-readout,
   .scene-surface,
   .future-item {
-    padding: 18px;
+    padding: 16px;
+  }
+
+  .scene-ledger strong,
+  .scene-room-readout strong,
+  .future-item h3 {
+    font-size: 18px;
+  }
+
+  .scene-note,
+  .future-item p,
+  .scene-room-meta {
+    font-size: 13px;
+    line-height: 1.6;
+  }
+
+  .scene-aside,
+  .scene-stack,
+  .scene-future-list {
+    gap: 14px;
+  }
+
+  .scene-surface,
+  .future-item {
+    border-width: 1px;
   }
 
   .cinema-shell .upload-surface {

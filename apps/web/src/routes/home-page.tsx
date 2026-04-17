@@ -22,12 +22,13 @@ import { TransferList } from "../components/TransferList"
 import { ThemeToggle } from "../components/ThemeToggle"
 import { CustomCursor } from "../components/CustomCursor"
 import { LoadingScreen } from "../components/LoadingScreen"
-import { ThreeTitleStage } from "../components/ThreeTitleStage"
 import type { TransferState } from "../components/TransferItem"
 import { useTheme } from "../hooks/useTheme"
 
 type ConnectionState = "connecting" | "online" | "offline"
 type IntroPhase = "loading" | "entrance" | "ready"
+
+const DESKTOP_STAGE_QUERY = "(min-width: 1025px)"
 
 type ScenePalette = {
   bgTop: [number, number, number]
@@ -373,6 +374,26 @@ function rgbTupleToCss([r, g, b]: [number, number, number]) {
   return `${r} ${g} ${b}`
 }
 
+const SCENE_PALETTES_DARK: ScenePalette[] = SCENE_PALETTES.map((palette) => ({
+  bgTop: mixRgb(palette.bgTop, [12, 14, 18], 0.92),
+  bgBottom: mixRgb(palette.bgBottom, [7, 9, 12], 0.94),
+  ink: mixRgb(palette.ink, [244, 246, 248], 0.9),
+  muted: mixRgb(palette.muted, [172, 178, 186], 0.78),
+  line: mixRgb(palette.line, [214, 220, 228], 0.82),
+  accent: mixRgb(palette.accent, [132, 168, 255], 0.34),
+  glow: mixRgb(palette.glow, [72, 88, 122], 0.72),
+}))
+
+function applyCinemaPalette(element: HTMLElement, palette: ScenePalette) {
+  element.style.setProperty("--cinema-bg-top", rgbTupleToCss(palette.bgTop))
+  element.style.setProperty("--cinema-bg-bottom", rgbTupleToCss(palette.bgBottom))
+  element.style.setProperty("--cinema-ink-rgb", rgbTupleToCss(palette.ink))
+  element.style.setProperty("--cinema-muted-rgb", rgbTupleToCss(palette.muted))
+  element.style.setProperty("--cinema-line-rgb", rgbTupleToCss(palette.line))
+  element.style.setProperty("--cinema-accent-rgb", rgbTupleToCss(palette.accent))
+  element.style.setProperty("--cinema-glow-rgb", rgbTupleToCss(palette.glow))
+}
+
 type PendingIncoming = {
   meta: RelayFileMeta
   chunks: Array<Uint8Array | undefined>
@@ -703,9 +724,12 @@ export function HomePage() {
   const [toasts, setToasts] = useState<ToastMessage[]>([])
   const [activeSceneIndex, setActiveSceneIndex] = useState(0)
   const [introPhase, setIntroPhase] = useState<IntroPhase>("loading")
+  const [isDesktopViewport, setIsDesktopViewport] = useState(() => window.matchMedia(DESKTOP_STAGE_QUERY).matches)
   const storySteps = 6
 
   const { theme, toggleTheme } = useTheme()
+  const introReady = introPhase === "ready"
+  const introActive = introPhase !== "loading"
 
   const shellRef = useRef<HTMLElement | null>(null)
   const heroRef = useRef<HTMLElement | null>(null)
@@ -715,6 +739,8 @@ export function HomePage() {
   const reconnectTimerRef = useRef<number | null>(null)
   const relayNoticeShownRef = useRef(false)
   const activeSceneIndexRef = useRef(0)
+  const introPhaseRef = useRef<IntroPhase>("loading")
+  const themeRef = useRef(theme)
   const autoJoinRef = useRef(initialRoom)
   const autoCreateRef = useRef(false)
   const objectUrlsRef = useRef<string[]>([])
@@ -724,20 +750,48 @@ export function HomePage() {
     roomCodeRef.current = roomCode
   }, [roomCode])
 
-  const introStarted = introPhase !== "loading"
-  const introEntrance = introPhase === "entrance"
-
   useEffect(() => {
-    if (introPhase !== "entrance") return
-
-    const timer = window.setTimeout(() => {
-      setIntroPhase("ready")
-    }, 1350)
-
-    return () => window.clearTimeout(timer)
+    introPhaseRef.current = introPhase
   }, [introPhase])
 
   useEffect(() => {
+    const mediaQuery = window.matchMedia(DESKTOP_STAGE_QUERY)
+    const syncViewport = () => {
+      setIsDesktopViewport(mediaQuery.matches)
+    }
+
+    syncViewport()
+
+    if (typeof mediaQuery.addEventListener === "function") {
+      mediaQuery.addEventListener("change", syncViewport)
+      return () => {
+        mediaQuery.removeEventListener("change", syncViewport)
+      }
+    }
+
+    mediaQuery.addListener(syncViewport)
+    return () => {
+      mediaQuery.removeListener(syncViewport)
+    }
+  }, [])
+
+  useEffect(() => {
+    themeRef.current = theme
+
+    const shell = shellRef.current
+    if (!shell || introPhaseRef.current !== "loading") return
+
+    const initialPalette = theme === "dark" ? SCENE_PALETTES_DARK[0] : SCENE_PALETTES[0]
+    applyCinemaPalette(shell, initialPalette)
+  }, [theme])
+
+  useEffect(() => {
+    if (!isDesktopViewport) {
+      document.documentElement.classList.remove("cinema-scroll-locked")
+      document.body.classList.remove("cinema-scroll-locked")
+      return
+    }
+
     document.documentElement.classList.add("cinema-scroll-locked")
     document.body.classList.add("cinema-scroll-locked")
 
@@ -745,11 +799,21 @@ export function HomePage() {
       document.documentElement.classList.remove("cinema-scroll-locked")
       document.body.classList.remove("cinema-scroll-locked")
     }
-  }, [])
+  }, [isDesktopViewport])
 
   useEffect(() => {
     const shell = shellRef.current
     if (!shell) return
+
+    if (!introActive) {
+      const initialPalette = themeRef.current === "dark" ? SCENE_PALETTES_DARK[0] : SCENE_PALETTES[0]
+      applyCinemaPalette(shell, initialPalette)
+      shell.style.setProperty("--story-cursor", "0.000")
+      shell.style.setProperty("--story-progress", "0.000")
+      shell.style.setProperty("--page-progress", "0.000")
+      shell.style.setProperty("--hero-progress", "0.000")
+      return
+    }
 
     const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)")
     let frame = 0
@@ -789,6 +853,48 @@ export function HomePage() {
     const shell = shellRef.current
     if (!shell) return
 
+    if (!isDesktopViewport) {
+      const initialPalette = themeRef.current === "dark" ? SCENE_PALETTES_DARK[0] : SCENE_PALETTES[0]
+      applyCinemaPalette(shell, initialPalette)
+      shell.style.setProperty("--hero-progress", "0.000")
+      shell.style.setProperty("--hero-drift", "0.000")
+      shell.style.setProperty("--hero-depth", "1.000")
+      shell.style.setProperty("--page-progress", "0.000")
+      shell.style.setProperty("--story-progress", "0.000")
+      shell.style.setProperty("--story-cursor", "0.000")
+      shell.style.setProperty("--mouse-x", "0.000")
+      shell.style.setProperty("--mouse-y", "0.000")
+      shell.style.setProperty("--lens-x", "0.000")
+      shell.style.setProperty("--lens-y", "0.000")
+      shell.style.setProperty("--scroll-y", "0.0")
+      shell.style.setProperty("--scroll-velocity", "0.000")
+      shell.style.setProperty("--scene-tilt-x", "0.000")
+      shell.style.setProperty("--scene-tilt-y", "0.000")
+      shell.style.setProperty("--stage-tilt-x", "0.000")
+      shell.style.setProperty("--stage-tilt-y", "0.000")
+      shell.style.setProperty("--stage-pan-x", "0.00px")
+      shell.style.setProperty("--stage-pan-y", "0.00px")
+      shell.style.setProperty("--travel-lift", "0.00px")
+      shell.style.setProperty("--travel-blur", "0.00px")
+      shell.style.setProperty("--travel-scale", "0.0000")
+      activeSceneIndexRef.current = 0
+      setActiveSceneIndex(0)
+
+      let introFrame = 0
+      if (introPhaseRef.current === "entrance") {
+        introFrame = window.requestAnimationFrame(() => {
+          introPhaseRef.current = "ready"
+          setIntroPhase("ready")
+        })
+      }
+
+      return () => {
+        if (introFrame) {
+          window.cancelAnimationFrame(introFrame)
+        }
+      }
+    }
+
     const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)")
     const scenes = Array.from(shell.querySelectorAll<HTMLElement>(".depth-scene"))
     const sceneCameraLead = 0.58
@@ -801,12 +907,13 @@ export function HomePage() {
     let lensMouseX = 0
     let lensMouseY = 0
     let hasManualTravel = false
-    let targetStoryCursor = reducedMotion.matches ? 0 : introStarted ? sceneCameraLead : 0
-    let currentStoryCursor = reducedMotion.matches ? targetStoryCursor : -0.42
+    let targetStoryCursor = sceneCameraLead
+    let currentStoryCursor = reducedMotion.matches ? sceneCameraLead : -0.42
     let previousStoryCursor = currentStoryCursor
     let touchY: number | null = null
     let touchX: number | null = null
     let isActive = true
+    let readyQueued = introPhaseRef.current === "ready"
 
     const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value))
     const smooth = (value: number) => {
@@ -846,7 +953,7 @@ export function HomePage() {
     const storyMin = sceneCameraLead - 0.06
 
     const applyStoryDelta = (delta: number) => {
-      if (!introStarted) return
+      if (introPhaseRef.current !== "ready") return
       hasManualTravel = true
       targetStoryCursor = clamp(targetStoryCursor + delta, storyMin, maxStoryCursor)
     }
@@ -882,12 +989,12 @@ export function HomePage() {
         applyStoryDelta(-0.14)
       } else if (event.key === "Home") {
         event.preventDefault()
-        if (!introStarted) return
+        if (introPhaseRef.current !== "ready") return
         hasManualTravel = true
         targetStoryCursor = storyMin
       } else if (event.key === "End") {
         event.preventDefault()
-        if (!introStarted) return
+        if (introPhaseRef.current !== "ready") return
         hasManualTravel = true
         targetStoryCursor = maxStoryCursor
       }
@@ -899,7 +1006,7 @@ export function HomePage() {
         touchX = null
         return
       }
-      if (!introStarted) return
+      if (introPhaseRef.current !== "ready") return
 
       const touch = event.touches[0]
       if (!touch) return
@@ -931,6 +1038,16 @@ export function HomePage() {
       touchX = null
     }
 
+    const queueIntroReady = () => {
+      if (readyQueued || introPhaseRef.current !== "entrance") return
+      readyQueued = true
+      window.requestAnimationFrame(() => {
+        if (!isActive) return
+        introPhaseRef.current = "ready"
+        setIntroPhase("ready")
+      })
+    }
+
     const updateScene = () => {
       if (!isActive) return
 
@@ -950,7 +1067,7 @@ export function HomePage() {
       // 提高平滑度，减少抖动
       const storyLerp = reducedMotion.matches
         ? 1
-        : !hasManualTravel && introStarted && currentStoryCursor < sceneCameraLead - 0.02
+        : !hasManualTravel && currentStoryCursor < sceneCameraLead - 0.02
           ? 0.08 // 从 0.046 提高到 0.08
           : 0.05 // 从 0.026 提高到 0.05
       currentStoryCursor += (targetStoryCursor - currentStoryCursor) * storyLerp
@@ -976,6 +1093,12 @@ export function HomePage() {
       const travelScale = reducedMotion.matches ? 0 : Math.min(travelDistance * 0.002 + Math.abs(velocity) * 0.00006, 0.006)
       previousStoryCursor = currentStoryCursor
 
+      if (introPhaseRef.current === "entrance") {
+        if (reducedMotion.matches || (travelDistance < 0.01 && Math.abs(velocity) < 0.025)) {
+          queueIntroReady()
+        }
+      }
+
       shell.style.setProperty("--hero-progress", progress.toFixed(3))
       shell.style.setProperty("--hero-drift", drift.toFixed(3))
       shell.style.setProperty("--hero-depth", (1 - progress).toFixed(3))
@@ -999,26 +1122,36 @@ export function HomePage() {
       shell.style.setProperty("--travel-blur", `${travelBlur.toFixed(2)}px`)
       shell.style.setProperty("--travel-scale", travelScale.toFixed(4))
 
-      const nextActiveSceneIndex = clamp(Math.round(Math.max(sceneTimelineCursor, 0)), 0, storySteps - 1)
+      const sceneCursor = clamp(sceneTimelineCursor, 0, storySteps - 1)
+      let nextActiveSceneIndex = activeSceneIndexRef.current
+      while (sceneCursor >= nextActiveSceneIndex + 0.58 && nextActiveSceneIndex < storySteps - 1) {
+        nextActiveSceneIndex += 1
+      }
+      while (sceneCursor <= nextActiveSceneIndex - 0.58 && nextActiveSceneIndex > 0) {
+        nextActiveSceneIndex -= 1
+      }
       if (nextActiveSceneIndex !== activeSceneIndexRef.current) {
         activeSceneIndexRef.current = nextActiveSceneIndex
         setActiveSceneIndex(nextActiveSceneIndex)
       }
 
-      const themeCursor = clamp(Math.max(sceneTimelineCursor, 0), 0, SCENE_PALETTES.length - 1)
+      const palettes = themeRef.current === "dark" ? SCENE_PALETTES_DARK : SCENE_PALETTES
+      const themeCursor = clamp(Math.max(sceneTimelineCursor, 0), 0, palettes.length - 1)
       const themeIndex = Math.floor(themeCursor)
-      const nextThemeIndex = Math.min(SCENE_PALETTES.length - 1, themeIndex + 1)
+      const nextThemeIndex = Math.min(palettes.length - 1, themeIndex + 1)
       const themeBlend = themeCursor - themeIndex
-      const paletteA = SCENE_PALETTES[themeIndex] ?? SCENE_PALETTES[0]
-      const paletteB = SCENE_PALETTES[nextThemeIndex] ?? paletteA
+      const paletteA = palettes[themeIndex] ?? palettes[0]
+      const paletteB = palettes[nextThemeIndex] ?? paletteA
 
-      shell.style.setProperty("--cinema-bg-top", rgbTupleToCss(mixRgb(paletteA.bgTop, paletteB.bgTop, themeBlend)))
-      shell.style.setProperty("--cinema-bg-bottom", rgbTupleToCss(mixRgb(paletteA.bgBottom, paletteB.bgBottom, themeBlend)))
-      shell.style.setProperty("--cinema-ink-rgb", rgbTupleToCss(mixRgb(paletteA.ink, paletteB.ink, themeBlend)))
-      shell.style.setProperty("--cinema-muted-rgb", rgbTupleToCss(mixRgb(paletteA.muted, paletteB.muted, themeBlend)))
-      shell.style.setProperty("--cinema-line-rgb", rgbTupleToCss(mixRgb(paletteA.line, paletteB.line, themeBlend)))
-      shell.style.setProperty("--cinema-accent-rgb", rgbTupleToCss(mixRgb(paletteA.accent, paletteB.accent, themeBlend)))
-      shell.style.setProperty("--cinema-glow-rgb", rgbTupleToCss(mixRgb(paletteA.glow, paletteB.glow, themeBlend)))
+      applyCinemaPalette(shell, {
+        bgTop: mixRgb(paletteA.bgTop, paletteB.bgTop, themeBlend),
+        bgBottom: mixRgb(paletteA.bgBottom, paletteB.bgBottom, themeBlend),
+        ink: mixRgb(paletteA.ink, paletteB.ink, themeBlend),
+        muted: mixRgb(paletteA.muted, paletteB.muted, themeBlend),
+        line: mixRgb(paletteA.line, paletteB.line, themeBlend),
+        accent: mixRgb(paletteA.accent, paletteB.accent, themeBlend),
+        glow: mixRgb(paletteA.glow, paletteB.glow, themeBlend),
+      })
 
       for (const [index, scene] of scenes.entries()) {
         const isHeroScene = index === 0
@@ -1085,7 +1218,7 @@ export function HomePage() {
           : clamp(0.14 + sceneCurrentness * 0.78 + reach(ahead, 1.08) * 0.18 - behind * 0.12, 0, 0.98)
         const sceneLayer = reducedMotion.matches
           ? storySteps - index
-          : Math.max(1, 1200 - Math.round(absOffset * 160))
+          : Math.max(1, 1600 - Math.round(offset * 180) - index * 4)
 
         scene.style.setProperty("--scene-index", `${index}`)
         scene.style.setProperty("--scene-progress", sceneFocus.toFixed(3))
@@ -1150,7 +1283,7 @@ export function HomePage() {
       window.removeEventListener("touchend", handleTouchEnd)
       reducedMotion.removeEventListener?.("change", handleTouchEnd)
     }
-  }, [storySteps, introPhase])
+  }, [introActive, isDesktopViewport, storySteps])
 
   function log(message: string) {
     const stamp = new Date().toLocaleTimeString("zh-CN", { hour12: false })
@@ -1611,6 +1744,10 @@ export function HomePage() {
   const recentTransfers = transfers.slice(0, 4)
   const activeTransfers = transfers.filter((transfer) => transfer.status === "transferring").length
   const stageLabel = peerConnected ? "对端已就绪" : roomCode ? "等待对端" : "创建房间"
+  const interactionHint = isDesktopViewport ? "滚轮推进" : "原生滚动"
+  const loadingCaption = isDesktopViewport
+    ? "滚轮推进场景，页面本身不做原生上下滚动"
+    : "???????????????????"
   const sceneLabels = ["入口", "安全", "建房", "分享", "传输", "延展"]
   const securityPillarsSafe = [
     "AES-256 端到端加密",
@@ -1646,6 +1783,7 @@ export function HomePage() {
       <CustomCursor />
       <LoadingScreen
         minDuration={1500}
+        caption={loadingCaption}
         onLoaded={() => {
           setIntroPhase("entrance")
         }}
@@ -1673,7 +1811,7 @@ export function HomePage() {
           {String(activeSceneIndex + 1).padStart(2, "0")} / {String(storySteps).padStart(2, "0")}
         </div>
         <div className="chrome-footer chrome-footer-left">
-          <span>滚轮推进</span>
+          <span>{interactionHint}</span>
           <span>{peerConnected ? "对端已接入" : roomCode ? "房间已创建，等待加入" : "尚未创建房间"}</span>
         </div>
         <div className="chrome-footer chrome-footer-right">
@@ -1683,7 +1821,6 @@ export function HomePage() {
       </div>
 
       <section className="story-shell cinema-shell" ref={heroRef}>
-        <ThreeTitleStage hostRef={heroRef} />
         <div className="cinema-stage">
           <article className="depth-scene depth-scene-hero" aria-labelledby="hero-title">
             <SceneAtmosphere />
@@ -1725,7 +1862,7 @@ export function HomePage() {
             <SceneMediaCluster className="scene-media-cluster-security" items={SECURITY_MEDIA} />
             <SceneHeadingLayer
               as="h2"
-              className="scene-heading-layer-security scene-heading-layer-left scene-heading-layer-has-three"
+              className="scene-heading-layer-security scene-heading-layer-left"
               marker="01"
               markerClassName="scene-index"
               titleId="security-title"
@@ -1761,7 +1898,7 @@ export function HomePage() {
             <SceneMediaCluster className="scene-media-cluster-room" items={ROOM_MEDIA} />
             <SceneHeadingLayer
               as="h2"
-              className="scene-heading-layer-room scene-heading-layer-right scene-heading-layer-has-three"
+              className="scene-heading-layer-room scene-heading-layer-right"
               marker="02"
               markerClassName="scene-index"
               titleId="room-title"
@@ -1805,7 +1942,7 @@ export function HomePage() {
             <SceneMediaCluster className="scene-media-cluster-share" items={SHARE_MEDIA} />
             <SceneHeadingLayer
               as="h2"
-              className="scene-heading-layer-share scene-heading-layer-left scene-heading-layer-has-three"
+              className="scene-heading-layer-share scene-heading-layer-left"
               marker="03"
               markerClassName="scene-index"
               titleId="share-title"
@@ -1874,7 +2011,7 @@ export function HomePage() {
             <SceneMediaCluster className="scene-media-cluster-transfer" items={TRANSFER_MEDIA} />
             <SceneHeadingLayer
               as="h2"
-              className="scene-heading-layer-transfer scene-heading-layer-right scene-heading-layer-has-three"
+              className="scene-heading-layer-transfer scene-heading-layer-right"
               marker="04"
               markerClassName="scene-index"
               titleId="transfer-title"
@@ -1919,7 +2056,7 @@ export function HomePage() {
             <SceneMediaCluster className="scene-media-cluster-future" items={FUTURE_MEDIA} />
             <SceneHeadingLayer
               as="h2"
-              className="scene-heading-layer-future scene-heading-layer-left scene-heading-layer-has-three"
+              className="scene-heading-layer-future scene-heading-layer-left"
               marker="05"
               markerClassName="scene-index"
               titleId="future-title"
