@@ -8,6 +8,7 @@ import { isPrintableInputChar } from "../src/core/input"
 import { deriveKey, encryptChunk } from "../src/p2p/crypto"
 import { createLanServer, type LanPeer } from "../src/p2p/lan-server"
 import { pickLanIPv4 } from "../src/p2p/network"
+import { createRelaySessionSecret, parseRelayJoinToken } from "../packages/shared/src/relay-session"
 import fs from "fs"
 import path from "path"
 import os from "os"
@@ -757,14 +758,14 @@ async function runCommand(raw: string) {
     relay
       .connect(RELAY_URL)
       .then(() => {
-        relay!.createRoom()
+        relayKey = createRelaySessionSecret()
+        relay!.createRoom(relayKey)
         const checkCreated = setInterval(() => {
           if (relay!.roomCode) {
             relayRoom = relay!.roomCode
-            relayKey = relayRoom
             clearInterval(checkCreated)
             log(`Relay room created: ${relayRoom}`)
-            log(`Share this code + key with your peer`)
+            log(`Share this join token with your peer: ${relayRoom} ${relayKey}`)
             rerender()
           }
         }, 100)
@@ -782,9 +783,9 @@ async function runCommand(raw: string) {
       log("Already in relay room. Use /rleave first.")
       return
     }
-    const parts = arg.split(/\s+/)
-    const room = parts[0]
-    const key = parts[1] ?? parts[0]
+    const target = parseRelayJoinToken(arg)
+    const room = target?.roomCode ?? ""
+    const key = target?.sessionSecret ?? room
     if (!room) {
       log("Usage: /rjoin <room> [key]")
       return

@@ -58,3 +58,28 @@ test("relay rooms forward transfer completion hashes", () => {
   assert.equal(joiner.messages[1]?.type, "done")
   assert.equal(joiner.messages[1]?.hash, "abc123")
 })
+
+test("relay rooms allow the creator to reconnect within the grace window", () => {
+  let codes = ["ROOM03", "HOST", "JOIN"]
+  const relayRooms = createRelayRooms(() => {
+    const next = codes.shift()
+    if (!next) throw new Error("Ran out of test codes")
+    return next
+  })
+
+  const creator = new MockSocket()
+  const joiner = new MockSocket()
+
+  relayRooms.handleMessage(creator, { type: "create" })
+  relayRooms.handleMessage(joiner, { type: "join", room: "ROOM03" })
+
+  relayRooms.handleClose(creator)
+  assert.equal(joiner.messages.at(-1)?.type, "peer_leave")
+
+  const reconnectingCreator = new MockSocket()
+  relayRooms.handleMessage(reconnectingCreator, { type: "reconnect", room: "ROOM03", peerId: "HOST", role: "creator" })
+
+  assert.equal(reconnectingCreator.messages[0]?.type, "reconnected")
+  assert.equal(reconnectingCreator.messages[0]?.peer, "JOIN")
+  assert.equal(joiner.messages.at(-1)?.type, "peer_joined")
+})

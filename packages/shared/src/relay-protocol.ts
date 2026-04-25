@@ -22,6 +22,7 @@ export interface RelayChunkPayload extends EncryptedChunkPayload {
 export type RelayClientMessage =
   | { type: "create" }
   | { type: "join"; room: string }
+  | { type: "reconnect"; room: string; peerId: string; role: "creator" | "joiner" }
   | { type: "relay"; data: RelayChunkPayload }
   | { type: "done"; hash: string }
   | { type: "leave" }
@@ -30,6 +31,7 @@ export type RelayClientMessage =
 export type RelayServerMessage =
   | { type: "created"; room: string; peerId: string }
   | { type: "joined"; room: string; peerId: string; peer: string | null }
+  | { type: "reconnected"; room: string; peerId: string; peer: string | null; role: "creator" | "joiner" }
   | { type: "peer_joined"; peerId: string }
   | { type: "peer_leave"; from?: string }
   | { type: "relay"; from?: string; data: RelayChunkPayload }

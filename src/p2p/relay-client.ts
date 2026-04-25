@@ -22,6 +22,7 @@ export class RelayClient {
   private peerId: string | null = null
   private peer: string | null = null
   private key: Buffer | null = null
+  private pendingCreateKey: string | null = null
   private listeners: Map<string, Set<Function>> = new Map()
   private connected = false
 
@@ -84,7 +85,8 @@ export class RelayClient {
         this.room = msg.room
         this.peerId = msg.peerId
         this.peer = null
-        this.key = deriveKey(msg.room)
+        this.key = deriveKey(this.pendingCreateKey ?? msg.room)
+        this.pendingCreateKey = null
         break
 
       case "joined":
@@ -131,7 +133,8 @@ export class RelayClient {
     }
   }
 
-  createRoom(): void {
+  createRoom(keyCode?: string): void {
+    this.pendingCreateKey = keyCode ?? null
     this.ws?.send(JSON.stringify({ type: "create" }))
   }
 
