@@ -27,6 +27,8 @@ function defaultGenCode(len = 6): string {
   return code
 }
 
+const MAX_ROOMS = 10_000
+
 export function createRelayRooms<TSocket extends RelaySocket>(
   genCode: (len?: number) => string = defaultGenCode,
 ): {
@@ -58,7 +60,22 @@ export function createRelayRooms<TSocket extends RelaySocket>(
     handleMessage(socket: TSocket, msg: Record<string, unknown>) {
       switch (msg.type) {
         case "create": {
-          const roomCode = genCode()
+          if (rooms.size >= MAX_ROOMS) {
+            socket.send(JSON.stringify({ type: "error", message: "Server busy, try later" }))
+            return
+          }
+
+          let roomCode = genCode()
+          let tries = 0
+          while (rooms.has(roomCode) && tries < 10) {
+            roomCode = genCode()
+            tries++
+          }
+          if (rooms.has(roomCode)) {
+            socket.send(JSON.stringify({ type: "error", message: "Failed to create room, try again" }))
+            return
+          }
+
           const peerId = genCode(4)
           rooms.set(roomCode, {
             creator: socket,
